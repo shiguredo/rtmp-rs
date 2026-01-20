@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc ba9f3b3a23dfa212fb585ce54d2e845604b8c954080593f5eecdf6a5ab7d67d7 # shrinks to frame = VideoFrame { timestamp: RtmpTimestamp(0), composition_timestamp_offset: RtmpTimestampDelta(-8388609), frame_type: KeyFrame, codec: Avc, avc_packet_type: Some(NalUnit), data: [] }

@@ -1,0 +1,23 @@
+[package]
+name = "server"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+noargs = "0.4.2"
+shiguredo_rtmp = { path = "../.." }
+rustls = { version = "0.23", default-features = false, features = [
+    "std",
+    "tls12",
+    "aws-lc-rs",
+] }
+tokio = { version = "1", features = [
+    "rt-multi-thread",
+    "net",
+    "io-util",
+    "macros",
+    "sync",
+    "time",
+] }
+tokio-rustls = "0.26"

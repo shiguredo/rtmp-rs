@@ -1,0 +1,24 @@
+[package]
+name = "publish"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+noargs = "0.4.2"
+shiguredo_mp4 = "2026.1.0"
+shiguredo_rtmp = { path = "../.." }
+rustls = { version = "0.23", default-features = false, features = [
+    "std",
+    "tls12",
+    "aws-lc-rs",
+] }
+rustls-platform-verifier = "0.6"
+tokio = { version = "1", features = [
+    "rt-multi-thread",
+    "net",
+    "io-util",
+    "macros",
+    "time",
+] }
+tokio-rustls = "0.26"

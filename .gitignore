@@ -1,0 +1,12 @@
+target/
+
+# Agents
+.claude/
+.codex/
+
+# Media files
+*.ts
+*.mp4
+
+# macOS
+.DS_Store
