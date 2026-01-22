@@ -18,3 +18,4 @@ pbt = []
 
 [workspace]
 members = ["examples/publish", "examples/server", "pbt"]
+exclude = ["fuzz"]
