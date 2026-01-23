@@ -29,9 +29,9 @@ impl RtmpPublishClientConnection {
     /// # 引数
     ///
     /// * `url` - 接続先の URL (例: "rtmp://localhost/app/stream")
-    pub fn new(url: &RtmpUrl) -> Self {
+    pub fn new(url: RtmpUrl) -> Self {
         Self {
-            inner: RtmpClientConnection::new(url.clone()),
+            inner: RtmpClientConnection::new(url),
         }
     }
 
@@ -130,9 +130,9 @@ impl RtmpPlayClientConnection {
     /// # 引数
     ///
     /// * `url` - 接続先の URL (例: "rtmp://localhost/app/stream")
-    pub fn new(url: &RtmpUrl) -> Self {
+    pub fn new(url: RtmpUrl) -> Self {
         Self {
-            inner: RtmpClientConnection::new(url.clone()),
+            inner: RtmpClientConnection::new(url),
         }
     }
 
