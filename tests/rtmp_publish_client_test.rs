@@ -4,11 +4,9 @@ use std::sync::mpsc;
 use std::time::Duration;
 
 use shiguredo_rtmp::{
-    AvcPacketType, MediaFrame, RtmpTimestamp, RtmpTimestampDelta, VideoCodec, VideoFrame,
-    VideoFrameType,
-};
-use shiguredo_rtmp::{
-    RtmpConnectionEvent, RtmpConnectionState, RtmpPublishClientConnection, RtmpServerConnection,
+    AvcPacketType, MediaFrame, RtmpConnectionEvent, RtmpConnectionState,
+    RtmpPublishClientConnection, RtmpServerConnection, RtmpTimestamp, RtmpTimestampDelta, RtmpUrl,
+    VideoCodec, VideoFrame, VideoFrameType,
 };
 
 const TEST_STREAM_NAME: &str = "test";
@@ -143,7 +141,9 @@ fn test_rtmp_publish_client_basic_flow() {
         .set_read_timeout(Some(Duration::from_millis(100)))
         .expect("Failed to set read timeout");
 
-    let mut client = RtmpPublishClientConnection::new("rtmp://127.0.0.1/live", TEST_STREAM_NAME);
+    let url_string = format!("rtmp://127.0.0.1/live/{}", TEST_STREAM_NAME);
+    let url: RtmpUrl = url_string.parse().expect("Invalid URL");
+    let mut client = RtmpPublishClientConnection::new(url);
 
     let mut recv_buf = [0; 4096];
     const MAX_ITERATIONS: usize = 1000;

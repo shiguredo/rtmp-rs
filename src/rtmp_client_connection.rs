@@ -9,6 +9,7 @@ use crate::rtmp_connection::{
 use crate::rtmp_handshake::RtmpClientHandshake;
 use crate::rtmp_message::{RtmpMessage, RtmpMessageHeader, RtmpMessageStreamId};
 use crate::rtmp_timestamp::RtmpTimestamp;
+use crate::rtmp_url::RtmpUrl;
 use crate::rtmp_user_control_event::RtmpUserControlEvent;
 
 const FLASH_VER: &str = "FMLE/3.0 (compatible; FME/3.0)";
@@ -27,11 +28,10 @@ impl RtmpPublishClientConnection {
     ///
     /// # 引数
     ///
-    /// * `tc_url` - 接続先の URL (例: "rtmp://localhost/app")
-    /// * `stream_name` - 配信するストリーム名
-    pub fn new(tc_url: &str, stream_name: &str) -> Self {
+    /// * `url` - 接続先の URL (例: "rtmp://localhost/app/stream")
+    pub fn new(url: RtmpUrl) -> Self {
         Self {
-            inner: RtmpClientConnection::new(tc_url, stream_name),
+            inner: RtmpClientConnection::new(url),
         }
     }
 
@@ -100,7 +100,7 @@ impl RtmpPublishClientConnection {
 
         let command = RtmpCommand::Publish(crate::rtmp_command::RtmpPublishCommand {
             transaction_id: self.inner.next_transaction_id,
-            stream_name: self.inner.stream_name.clone(),
+            stream_name: self.inner.url.stream_name.clone(),
         });
 
         let message = command.into_message(RtmpMessageHeader {
@@ -129,11 +129,10 @@ impl RtmpPlayClientConnection {
     ///
     /// # 引数
     ///
-    /// * `tc_url` - 接続先の URL (例: "rtmp://localhost/app")
-    /// * `stream_name` - 再生するストリーム名
-    pub fn new(tc_url: &str, stream_name: &str) -> Self {
+    /// * `url` - 接続先の URL (例: "rtmp://localhost/app/stream")
+    pub fn new(url: RtmpUrl) -> Self {
         Self {
-            inner: RtmpClientConnection::new(tc_url, stream_name),
+            inner: RtmpClientConnection::new(url),
         }
     }
 
@@ -169,7 +168,7 @@ impl RtmpPlayClientConnection {
 
         let command = RtmpCommand::Play(crate::rtmp_command::RtmpPlayCommand {
             transaction_id: self.inner.next_transaction_id,
-            stream_name: self.inner.stream_name.clone(),
+            stream_name: self.inner.url.stream_name.clone(),
             start: -1.0, // 「常にライブストリームを再生する」と言うことを意味する値
         });
 
@@ -194,12 +193,11 @@ struct RtmpClientConnection {
     handshake: RtmpClientHandshake,
     message_channel: RtmpMessageChannel,
     next_transaction_id: TransactionId,
-    tc_url: String,
-    stream_name: String,
+    url: RtmpUrl,
 }
 
 impl RtmpClientConnection {
-    fn new(tc_url: &str, stream_name: &str) -> Self {
+    fn new(url: RtmpUrl) -> Self {
         let initial_state = RtmpConnectionState::Handshaking;
         let mut event_queue = VecDeque::new();
         event_queue.push_back(RtmpConnectionEvent::StateChanged(initial_state));
@@ -211,8 +209,7 @@ impl RtmpClientConnection {
             handshake: RtmpClientHandshake::new(),
             message_channel: RtmpMessageChannel::default(),
             next_transaction_id: TransactionId::NON_RESERVED_START,
-            tc_url: tc_url.to_owned(),
-            stream_name: stream_name.to_owned(),
+            url,
         }
     }
 
@@ -245,11 +242,18 @@ impl RtmpClientConnection {
             .feed_send_message(RtmpMessage::set_chunk_size(self.options.chunk_size));
 
         // Connect コマンドを送信する
-        let app = self.parse_app_name()?;
+        let tc_url = format!(
+            "{}://{}:{}/{}",
+            if self.url.tls { "rtmps" } else { "rtmp" },
+            self.url.host,
+            self.url.port,
+            self.url.app
+        );
+
         let command = RtmpCommand::Connect(RtmpConnectCommand {
-            app,
+            app: self.url.app.clone(),
             flash_ver: FLASH_VER.to_owned(),
-            tc_url: self.tc_url.clone(),
+            tc_url,
         });
         let message = command.into_pcm_message()?;
         self.message_channel.feed_send_message(message);
@@ -483,27 +487,5 @@ impl RtmpClientConnection {
 
     fn next_event(&mut self) -> Option<RtmpConnectionEvent> {
         self.event_queue.pop_front()
-    }
-
-    // tc_url の形式: PROTOCOL://HOST[:PORT]/APP[/INSTANCE]
-    // app 名（最初のパス要素）を抽出する
-    fn parse_app_name(&self) -> Result<String, Error> {
-        // スキーム部分（rtmp://）を削除
-        let after_scheme = self
-            .tc_url
-            .split_once("://")
-            .ok_or_else(|| Error::invalid_input("tc_url must start with 'PROTOCOL://'"))?
-            .1;
-
-        // ホストとパスを分ける最初の '/' を見つける
-        let path = after_scheme
-            .split_once('/')
-            .ok_or_else(|| Error::invalid_data("tc_url must contain a path component"))?
-            .1;
-
-        // app 名を抽出（次の '/' があればその前まで）
-        let app_name = path.split('/').next().unwrap_or_default().to_owned();
-
-        Ok(app_name)
     }
 }
