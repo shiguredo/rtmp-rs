@@ -474,7 +474,7 @@ fn create_avc_sequence_header_annexb(sps_list: &[Vec<u8>], pps_list: &[Vec<u8>])
     result
 }
 
-// 入力ファイルのコーデックが H.264 / ACC かどうかをチェックする
+// 入力ファイルのコーデックが H.264 / AAC かどうかをチェックする
 fn validate_codecs(demuxer: &mut Mp4FileDemuxer) -> noargs::Result<()> {
     let mut has_h264_video = false;
     let mut has_aac_audio = false;
@@ -491,21 +491,26 @@ fn validate_codecs(demuxer: &mut Mp4FileDemuxer) -> noargs::Result<()> {
                     println!("✓ Found AAC audio codec");
                 }
                 other => {
-                    // サポートされていないコーデックが見つかった場合はエラー
-                    Err(format!(
-                        "Unsupported codec found: {other:?}. Only H.264 video and AAC audio are supported."
-                    ))?;
+                    // サポートされていないコーデックは警告として記録
+                    println!("⚠ Unsupported codec found: {other:?}");
                 }
             }
         }
     }
 
-    // ビデオまたはオーディオが見つからない場合は警告を出すが続行する
+    // ビデオまたはオーディオが見つからない場合は警告
     if !has_h264_video {
         println!("⚠ No H.264 video codec found");
     }
     if !has_aac_audio {
         println!("⚠ No AAC audio codec found");
+    }
+
+    // 映像も音声も利用可能なものが見つからなかった場合はエラー
+    if !has_h264_video && !has_aac_audio {
+        return Err(
+            "No supported codecs found. At least H.264 video or AAC audio is required.".into(),
+        );
     }
 
     Ok(())
