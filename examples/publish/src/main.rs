@@ -19,8 +19,8 @@ use rustls::pki_types::ServerName;
 use rustls_platform_verifier::ConfigVerifierExt;
 use shiguredo_mp4::demux::{Input, Mp4FileDemuxer};
 use shiguredo_rtmp::{
-    AudioFormat, AudioFrame, AudioSampleRate, AvcPacketType, RtmpPublishClientConnection,
-    RtmpTimestamp, RtmpTimestampDelta, VideoCodec, VideoFrame, VideoFrameType,
+    AudioFormat, AudioFrame, AvcPacketType, RtmpPublishClientConnection, RtmpTimestamp,
+    RtmpTimestampDelta, VideoCodec, VideoFrame, VideoFrameType,
 };
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
@@ -445,8 +445,6 @@ fn send_audio_sample(
     let mp4a_box = last_mp4a_box
         .as_ref()
         .ok_or("No audio sample entry available")?;
-    let channel_count = mp4a_box.audio.channelcount as u8;
-    let sample_rate_hz = mp4a_box.audio.samplerate.integer;
     let is_8bit = mp4a_box.audio.samplesize == 8;
 
     // シーケンスヘッダーを送信する（最初のサンプルの場合）
@@ -469,9 +467,9 @@ fn send_audio_sample(
     let frame = AudioFrame {
         timestamp: RtmpTimestamp::from_millis(timestamp_ms),
         format: AudioFormat::Aac,
-        sample_rate: audio_sample_rate,
+        sample_rate: AudioFrame::AAC_SAMPLE_RATE,
+        is_stereo: AudioFrame::AAC_STEREO,
         is_8bit_sample: is_8bit,
-        is_stereo,
         is_aac_sequence_header: false,
         data: sample_data.to_vec(),
     };
