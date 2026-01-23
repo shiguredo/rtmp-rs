@@ -101,9 +101,9 @@ fn parse_host_port(host_port: &str, tls: bool) -> Result<(&str, u16), Error> {
             if remainder.is_empty() {
                 // ポート番号なし
                 (host, None)
-            } else if remainder.starts_with(':') {
+            } else if let Some(remainder) = remainder.strip_prefix(':') {
                 // ポート番号あり
-                (host, Some(&remainder[1..]))
+                (host, Some(remainder))
             } else {
                 return Err(Error::invalid_input(
                     "invalid format after IPv6 address, expected ':' before port",
@@ -168,7 +168,7 @@ fn validate_host(host: &str) -> Result<(), Error> {
     }
 
     // IPv4 アドレスの場合
-    if let Ok(_) = IpAddr::from_str(host) {
+    if IpAddr::from_str(host).is_ok() {
         return Ok(());
     }
 
