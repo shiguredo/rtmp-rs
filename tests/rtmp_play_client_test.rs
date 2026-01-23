@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use shiguredo_rtmp::{
     AvcPacketType, RtmpConnectionEvent, RtmpConnectionState, RtmpPlayClientConnection,
-    RtmpServerConnection, RtmpTimestamp, RtmpTimestampDelta, VideoCodec, VideoFrame,
+    RtmpServerConnection, RtmpTimestamp, RtmpTimestampDelta, RtmpUrl, VideoCodec, VideoFrame,
     VideoFrameType,
 };
 
@@ -151,7 +151,9 @@ fn test_rtmp_play_client_basic_flow() {
         .set_read_timeout(Some(Duration::from_millis(100)))
         .expect("Failed to set read timeout");
 
-    let mut client = RtmpPlayClientConnection::new("rtmp://127.0.0.1/live", TEST_STREAM_NAME);
+    let url_string = format!("rtmp://127.0.0.1/live/{}", TEST_STREAM_NAME);
+    let url: RtmpUrl = url_string.parse().expect("Invalid URL");
+    let mut client = RtmpPlayClientConnection::new(url);
 
     let mut recv_buf = [0; 4096];
     const MAX_ITERATIONS: usize = 1000;
