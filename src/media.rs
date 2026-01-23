@@ -35,6 +35,20 @@ pub struct AudioFrame {
     pub data: Vec<u8>,
 }
 
+impl AudioFrame {
+    /// AAC 用のサンプルレート
+    ///
+    /// FLV の仕様で「AAC の場合は固定値を使用する」と規定されている
+    /// （この値は無視されて、デコーダーはビットストリームから適切な値を取得する）
+    pub const AAC_SAMPLE_RATE: AudioSampleRate = AudioSampleRate::Khz44;
+
+    /// AAC 用のステレオフラグの値
+    ///
+    /// FLV の仕様で「AAC の場合は固定値を使用する」と規定されている
+    /// （この値は無視されて、デコーダーはビットストリームから適切な値を取得する）
+    pub const AAC_STEREO: bool = true;
+}
+
 /// エンコードされた映像データを含む映像フレーム
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VideoFrame {

@@ -446,23 +446,8 @@ fn send_audio_sample(
         .as_ref()
         .ok_or("No audio sample entry available")?;
     let channel_count = mp4a_box.audio.channelcount as u8;
-    let is_stereo = channel_count >= 2;
     let sample_rate_hz = mp4a_box.audio.samplerate.integer;
     let is_8bit = mp4a_box.audio.samplesize == 8;
-
-    // Hz を AudioSampleRate enum に変換
-    let audio_sample_rate = match sample_rate_hz {
-        5500 => AudioSampleRate::Khz5,
-        11000 => AudioSampleRate::Khz11,
-        22000 => AudioSampleRate::Khz22,
-        44100 => AudioSampleRate::Khz44,
-        _ => {
-            if is_first {
-                println!("Unsupported sample rate: {sample_rate_hz}Hz, defaulting to 44.1kHz");
-            }
-            AudioSampleRate::Khz44
-        }
-    };
 
     // シーケンスヘッダーを送信する（最初のサンプルの場合）
     if is_first {
@@ -470,9 +455,9 @@ fn send_audio_sample(
         let seq_frame = AudioFrame {
             timestamp: RtmpTimestamp::from_millis(timestamp_ms),
             format: AudioFormat::Aac,
-            sample_rate: audio_sample_rate,
+            sample_rate: AudioFrame::AAC_SAMPLE_RATE,
+            is_stereo: AudioFrame::AAC_STEREO,
             is_8bit_sample: is_8bit,
-            is_stereo,
             is_aac_sequence_header: true,
             data: audio_config,
         };
