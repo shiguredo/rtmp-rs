@@ -19,6 +19,7 @@ mod rtmp_message_decoder;
 mod rtmp_message_encoder;
 mod rtmp_server_connection;
 mod rtmp_timestamp;
+mod rtmp_url;
 mod rtmp_user_control_event;
 
 pub use error::{Error, ErrorKind};
@@ -30,6 +31,7 @@ pub use rtmp_client_connection::{RtmpPlayClientConnection, RtmpPublishClientConn
 pub use rtmp_connection::{RtmpConnectionEvent, RtmpConnectionState};
 pub use rtmp_server_connection::RtmpServerConnection;
 pub use rtmp_timestamp::{RtmpTimestamp, RtmpTimestampDelta};
+pub use rtmp_url::RtmpUrl;
 
 // PBT / Fuzzing 用に条件付きで公開しているモジュール
 #[cfg(feature = "pbt")]
