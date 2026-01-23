@@ -1,4 +1,6 @@
 use crate::Error;
+use std::net::IpAddr;
+use std::str::FromStr;
 
 /// RTMP 用の URL
 ///
@@ -58,15 +60,8 @@ impl std::str::FromStr for RtmpUrl {
             .ok_or_else(|| Error::invalid_input("missing '/' separator for app name"))?;
 
         // host, port
-        let (host, port) = if let Some((host_part, port_part)) = host_port.rsplit_once(':') {
-            let port = port_part.parse::<u16>().map_err(|e| {
-                Error::invalid_input(format!("invalid port number '{port_part}': {e}"))
-            })?;
-            (host_part, port)
-        } else {
-            // ポート番号が未指定の場合はデフォルト値を使う
-            (host_port, if tls { 443 } else { 1935 })
-        };
+        let (host, port) = parse_host_port(host_port, tls)?;
+
         if host.is_empty() {
             return Err(Error::invalid_input("host cannot be empty"));
         }
@@ -92,11 +87,115 @@ impl std::str::FromStr for RtmpUrl {
     }
 }
 
+/// ホストとポート番号をパースする
+/// IPv4、IPv6、ホスト名に対応
+fn parse_host_port(host_port: &str, tls: bool) -> Result<(&str, u16), Error> {
+    // ポート番号が含まれているかチェック
+    // IPv6 アドレスの場合は ] の後ろにポートがある
+    let (host, port_str) = if host_port.starts_with('[') {
+        // IPv6 アドレスの場合: [::1]:1935
+        if let Some(bracket_end) = host_port.find(']') {
+            let host = &host_port[..=bracket_end];
+            let remainder = &host_port[bracket_end + 1..];
+
+            if remainder.is_empty() {
+                // ポート番号なし
+                (host, None)
+            } else if remainder.starts_with(':') {
+                // ポート番号あり
+                (host, Some(&remainder[1..]))
+            } else {
+                return Err(Error::invalid_input(
+                    "invalid format after IPv6 address, expected ':' before port",
+                ));
+            }
+        } else {
+            return Err(Error::invalid_input(
+                "invalid IPv6 address format, missing ']'",
+            ));
+        }
+    } else {
+        // IPv4 またはホスト名
+        if let Some(colon_pos) = host_port.rfind(':') {
+            // ':' が見つかった場合、ポート番号がある可能性
+            let potential_port = &host_port[colon_pos + 1..];
+            // ポート部分が数字のみか確認（IPv6でない場合）
+            if potential_port.chars().all(|c| c.is_ascii_digit()) {
+                (&host_port[..colon_pos], Some(potential_port))
+            } else {
+                // IPv6 で '[' がない不正な形式
+                return Err(Error::invalid_input("invalid host:port format"));
+            }
+        } else {
+            // ':' がない（ポート番号なし）
+            (host_port, None)
+        }
+    };
+
+    // ホスト部分の妥当性を確認（IpAddr または 有効なホスト名）
+    validate_host(host)?;
+
+    // ポート番号をパース
+    let port = match port_str {
+        Some(port_s) => port_s
+            .parse::<u16>()
+            .map_err(|e| Error::invalid_input(format!("invalid port number '{port_s}': {e}")))?,
+        None => {
+            if tls {
+                443
+            } else {
+                1935
+            }
+        }
+    };
+
+    Ok((host, port))
+}
+
+/// ホスト部分の妥当性を確認
+/// IPv4、IPv6（[] で囲まれた形式）、ホスト名に対応
+fn validate_host(host: &str) -> Result<(), Error> {
+    if host.is_empty() {
+        return Err(Error::invalid_input("host cannot be empty"));
+    }
+
+    // IPv6 アドレスの場合
+    if host.starts_with('[') && host.ends_with(']') {
+        let ipv6_part = &host[1..host.len() - 1];
+        IpAddr::from_str(ipv6_part)
+            .map_err(|_| Error::invalid_input(format!("invalid IPv6 address '{ipv6_part}'")))?;
+        return Ok(());
+    }
+
+    // IPv4 アドレスの場合
+    if let Ok(_) = IpAddr::from_str(host) {
+        return Ok(());
+    }
+
+    // ホスト名の場合（簡易チェック）
+    if is_valid_hostname(host) {
+        return Ok(());
+    }
+
+    Err(Error::invalid_input(format!(
+        "invalid host '{host}', must be a valid IPv4, IPv6, or hostname"
+    )))
+}
+
+/// ホスト名の妥当性を簡易的にチェック
+fn is_valid_hostname(host: &str) -> bool {
+    if host.is_empty() {
+        return false;
+    }
+
+    // ホスト名は英数字、ハイフン、ドット、アンダースコアで構成される
+    host.chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '.' || c == '_')
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    use std::str::FromStr;
 
     #[test]
     fn test_basic_rtmp_url() {
@@ -227,5 +326,79 @@ mod tests {
         let url1 = RtmpUrl::from_str("rtmp://example.com/live/stream").unwrap();
         let url2 = url1.clone();
         assert_eq!(url1, url2);
+    }
+
+    // IPv6 対応テストケース
+    #[test]
+    fn test_ipv6_address_with_port() {
+        let url = RtmpUrl::from_str("rtmp://[::1]:1935/live/stream").unwrap();
+        assert_eq!(url.host, "[::1]");
+        assert_eq!(url.port, 1935);
+        assert_eq!(url.app, "live");
+        assert_eq!(url.stream_name, "stream");
+    }
+
+    #[test]
+    fn test_ipv6_address_full() {
+        let url = RtmpUrl::from_str("rtmp://[2001:db8::1]:1935/live/stream").unwrap();
+        assert_eq!(url.host, "[2001:db8::1]");
+        assert_eq!(url.port, 1935);
+    }
+
+    #[test]
+    fn test_ipv6_address_default_port_rtmp() {
+        let url = RtmpUrl::from_str("rtmp://[::1]/live/stream").unwrap();
+        assert_eq!(url.host, "[::1]");
+        assert_eq!(url.port, 1935);
+    }
+
+    #[test]
+    fn test_ipv6_address_default_port_rtmps() {
+        let url = RtmpUrl::from_str("rtmps://[::1]/live/stream").unwrap();
+        assert_eq!(url.host, "[::1]");
+        assert_eq!(url.port, 443);
+    }
+
+    #[test]
+    fn test_ipv6_display() {
+        let url = RtmpUrl {
+            host: "[::1]".to_owned(),
+            port: 1935,
+            app: "live".to_owned(),
+            stream_name: "stream".to_owned(),
+            tls: false,
+        };
+        assert_eq!(url.to_string(), "rtmp://[::1]:1935/live/stream");
+    }
+
+    #[test]
+    fn test_ipv6_display_rtmps() {
+        let url = RtmpUrl {
+            host: "[2001:db8::1]".to_owned(),
+            port: 443,
+            app: "app".to_owned(),
+            stream_name: "stream".to_owned(),
+            tls: true,
+        };
+        assert_eq!(url.to_string(), "rtmps://[2001:db8::1]:443/app/stream");
+    }
+
+    #[test]
+    fn test_ipv6_round_trip() {
+        let original = "rtmp://[::1]:1935/live/stream";
+        let url = RtmpUrl::from_str(original).unwrap();
+        assert_eq!(url.to_string(), original);
+    }
+
+    #[test]
+    fn test_invalid_ipv6_address() {
+        let result = RtmpUrl::from_str("rtmp://[::gggg]:1935/live/stream");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_ipv6_missing_closing_bracket() {
+        let result = RtmpUrl::from_str("rtmp://[::1:1935/live/stream");
+        assert!(result.is_err());
     }
 }
