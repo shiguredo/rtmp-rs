@@ -407,12 +407,7 @@ fn send_audio_sample(
 /// AAC の AudioSpecificConfig を作成する
 fn create_aac_audio_specific_config(mp4a_box: &shiguredo_mp4::boxes::Mp4aBox) -> Option<Vec<u8>> {
     // EsdsBox から DecoderSpecificInfo を取得
-    if let Some(dec_specific_info) = &mp4a_box.esds_box.es.dec_config_descr.dec_specific_info {
-        Some(dec_specific_info.payload.clone())
-    } else {
-        // [NOTE] この情報がなくても受信側が問題なく再生できることがあるので、ここではエラーにしない
-        None
-    }
+    mp4a_box.esds_box.es.dec_config_descr.dec_specific_info.as_ref().map(|dec_specific_info| dec_specific_info.payload.clone())
 }
 
 /// MP4 ファイルの H.264 映像フレームの形式を RTMP がサポートしている Annex B 形式に変換する
