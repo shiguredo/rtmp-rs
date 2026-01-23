@@ -18,12 +18,16 @@ use std::str::FromStr;
 
 /// 小さめの ASCII 文字列を生成する Strategy
 fn arb_small_string() -> impl Strategy<Value = String> {
-    "[a-zA-Z0-9_./-]{1,20}".prop_map(|s| s.to_string())
+    "[a-zA-Z0-9_.-]{1,20}".prop_map(|s| s.to_string())
 }
 
 /// tcUrl 形式の URL を生成する Strategy
 fn arb_tc_url() -> impl Strategy<Value = String> {
-    (arb_small_string(), arb_small_string(), arb_small_string())
+    (
+        prop_oneof![Just("rtmp"), Just("rtmps")],
+        arb_small_string(),
+        arb_small_string(),
+    )
         .prop_map(|(proto, host, app)| format!("{proto}://{host}/{app}"))
 }
 
