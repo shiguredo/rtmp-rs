@@ -35,11 +35,11 @@ async fn main() -> noargs::Result<()> {
     noargs::HELP_FLAG.take_help(&mut args);
 
     // URL オプション (rtmp:// または rtmps:// スキーム)
-    let url: Option<String> = noargs::opt("url")
+    let url: Option<RtmpUrl> = noargs::opt("url")
         .short('u')
         .doc("RTMP/RTMPS URL (e.g., rtmps://example.com/live/stream)")
         .take(&mut args)
-        .present_and_then(|o| Ok::<_, &str>(o.value().to_string()))?;
+        .present_and_then(|o| o.value().parse())?;
 
     let host: String = noargs::opt("host")
         .short('H')
@@ -83,41 +83,29 @@ async fn main() -> noargs::Result<()> {
         return Ok(());
     }
 
-    // URL が指定されている場合はパースして使用
-    let (final_host, final_port, final_app, final_stream, use_tls) = if let Some(ref url_str) = url
-    {
-        let parsed: RtmpUrl = url_str.parse()?;
-        (
-            parsed.host,
-            parsed.port,
-            parsed.app,
-            parsed.stream_name,
-            parsed.tls,
-        )
+    // URL が指定されている場合はそれを使用、そうでなければ個別のオプションから構築
+    let rtmp_url = if let Some(url) = url {
+        url
     } else {
         let use_tls = tls_flag;
         let final_port = port.unwrap_or(if use_tls { 443 } else { 1935 });
-        (host, final_port, app, stream_name, use_tls)
+        RtmpUrl {
+            host,
+            port: final_port,
+            app,
+            stream_name,
+            tls: use_tls,
+        }
     };
 
-    let scheme = if use_tls { "rtmps" } else { "rtmp" };
     println!("Publishing to RTMP:");
-    println!("  RTMP URL:   {scheme}://{final_host}:{final_port}/{final_app}/{final_stream}",);
+    println!("  RTMP URL:   {rtmp_url}");
     println!("  Input file: {}", input_file_path.display());
-    if use_tls {
+    if rtmp_url.tls {
         println!("  TLS:        enabled");
     }
 
-    publish_mp4_to_rtmp(
-        &final_host,
-        final_port,
-        &final_app,
-        &final_stream,
-        &input_file_path,
-        use_tls,
-        verbose,
-    )
-    .await?;
+    publish_mp4_to_rtmp(&rtmp_url, &input_file_path, verbose).await?;
 
     Ok(())
 }
@@ -145,12 +133,8 @@ impl RtmpStream {
 }
 
 async fn publish_mp4_to_rtmp(
-    host: &str,
-    port: u16,
-    app: &str,
-    stream_name: &str,
+    url: &RtmpUrl,
     input_file_path: &PathBuf,
-    use_tls: bool,
     verbose: bool,
 ) -> noargs::Result<()> {
     // MP4 ファイルを読み込む
@@ -176,16 +160,13 @@ async fn publish_mp4_to_rtmp(
     demuxer.handle_input(input);
 
     // RTMP クライアント接続を作成
-    let scheme = if use_tls { "rtmps" } else { "rtmp" };
-    let tc_url = format!("{scheme}://{host}:{port}/{app}/{stream_name}");
-    let rtmp_url: RtmpUrl = tc_url.parse()?;
-    let mut connection = RtmpPublishClientConnection::new(rtmp_url);
+    let mut connection = RtmpPublishClientConnection::new(url.clone());
 
     // ソケットに接続
-    let mut socket = if use_tls {
-        connect_tls(host, port).await?
+    let mut socket = if url.tls {
+        connect_tls(&url.host, url.port).await?
     } else {
-        connect_plain(host, port).await?
+        connect_plain(&url.host, url.port).await?
     };
 
     println!("Connected to RTMP server, starting to publish...");
