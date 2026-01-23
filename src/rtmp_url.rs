@@ -69,12 +69,12 @@ impl std::str::FromStr for RtmpUrl {
         // app, stream_name
         let (app, stream_name) = path
             .rsplit_once('/')
-            .ok_or_else(|| Error::invalid_input("Missing app and/or stream_name in path"))?;
+            .ok_or_else(|| Error::invalid_input("missing app and/or stream_name in path"))?;
         if app.is_empty() {
-            return Err(Error::invalid_input("App name cannot be empty"));
+            return Err(Error::invalid_input("app name cannot be empty"));
         }
         if stream_name.is_empty() {
-            return Err(Error::invalid_input("Stream name cannot be empty"));
+            return Err(Error::invalid_input("stream name cannot be empty"));
         }
 
         Ok(RtmpUrl {
