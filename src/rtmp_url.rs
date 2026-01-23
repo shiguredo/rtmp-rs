@@ -172,25 +172,9 @@ fn validate_host(host: &str) -> Result<(), Error> {
         return Ok(());
     }
 
-    // ホスト名の場合（簡易チェック）
-    if is_valid_hostname(host) {
-        return Ok(());
-    }
+    // [NOTE] ホスト名の場合は、形式の厳密なチェックまではこの crate の責務ではないため行わない
 
-    Err(Error::invalid_input(format!(
-        "invalid host '{host}', must be a valid IPv4, IPv6, or hostname"
-    )))
-}
-
-/// ホスト名の妥当性を簡易的にチェック
-fn is_valid_hostname(host: &str) -> bool {
-    if host.is_empty() {
-        return false;
-    }
-
-    // ホスト名は英数字、ハイフン、ドット、アンダースコアで構成される
-    host.chars()
-        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '.' || c == '_')
+    Ok(())
 }
 
 #[cfg(test)]
