@@ -418,10 +418,15 @@ impl RtmpClientConnection {
 
         // その他のエラー状態を処理
         if command.level == "error" {
+            let mut reason = format!("OnStatus error: {}", command.code);
+            if let Some(description) = &command.description {
+                reason.push_str(&format!(" - {}", description));
+            }
+            if let Some(details) = &command.details {
+                reason.push_str(&format!(" ({})", details));
+            }
             self.event_queue
-                .push_back(RtmpConnectionEvent::DisconnectedByPeer {
-                    reason: format!("OnStatus error: {} - {}", command.code, command.description),
-                });
+                .push_back(RtmpConnectionEvent::DisconnectedByPeer { reason });
             self.change_state(RtmpConnectionState::Disconnecting)?;
             return Ok(());
         }
