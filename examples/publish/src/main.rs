@@ -376,8 +376,7 @@ fn send_audio_sample(
     let is_8bit = mp4a_box.audio.samplesize == 8;
 
     // シーケンスヘッダーを送信する（最初のサンプルの場合）
-    if is_first {
-        let audio_config = create_aac_audio_specific_config(mp4a_box)?;
+    if is_first && let Some(audio_config) = create_aac_audio_specific_config(mp4a_box) {
         let seq_frame = AudioFrame {
             timestamp: RtmpTimestamp::from_millis(timestamp_ms),
             format: AudioFormat::Aac,
@@ -406,14 +405,13 @@ fn send_audio_sample(
 }
 
 /// AAC の AudioSpecificConfig を作成する
-fn create_aac_audio_specific_config(
-    mp4a_box: &shiguredo_mp4::boxes::Mp4aBox,
-) -> noargs::Result<Vec<u8>> {
+fn create_aac_audio_specific_config(mp4a_box: &shiguredo_mp4::boxes::Mp4aBox) -> Option<Vec<u8>> {
     // EsdsBox から DecoderSpecificInfo を取得
     if let Some(dec_specific_info) = &mp4a_box.esds_box.es.dec_config_descr.dec_specific_info {
-        Ok(dec_specific_info.payload.clone())
+        Some(dec_specific_info.payload.clone())
     } else {
-        Err("No decoder specific info available".into())
+        // [NOTE] この情報がなくても受信側が問題なく再生できることがあるので、ここではエラーにしない
+        None
     }
 }
 
