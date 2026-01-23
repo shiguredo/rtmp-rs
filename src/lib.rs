@@ -54,5 +54,6 @@ pub mod tests {
     pub use crate::rtmp_message_encoder::*;
     pub use crate::rtmp_server_connection::*;
     pub use crate::rtmp_timestamp::*;
+    pub use crate::rtmp_url::*;
     pub use crate::rtmp_user_control_event::*;
 }

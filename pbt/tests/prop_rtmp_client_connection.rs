@@ -7,9 +7,10 @@ use shiguredo_rtmp::tests::{
     RtmpCommand, RtmpConnectionEvent, RtmpConnectionState, RtmpMessage, RtmpMessageDecoder,
     RtmpMessageEncoder, RtmpMessageHeader, RtmpMessageStreamId, RtmpPlayClientConnection,
     RtmpPublishClientConnection, RtmpResultCommand, RtmpServerHandshake, RtmpTimestamp,
-    RtmpTimestampDelta, RtmpUserControlEvent, SetPeerBandwidthLimitType, TransactionId, VideoCodec,
-    VideoFrame, VideoFrameType,
+    RtmpTimestampDelta, RtmpUrl, RtmpUserControlEvent, SetPeerBandwidthLimitType, TransactionId,
+    VideoCodec, VideoFrame, VideoFrameType,
 };
+use std::str::FromStr;
 
 // =============================================================================
 // Strategy 定義
@@ -169,9 +170,16 @@ fn drain_events_play(client: &mut RtmpPlayClientConnection) -> Vec<RtmpConnectio
     events
 }
 
+/// tcUrl と stream_name から RtmpUrl を構築する
+fn construct_rtmp_url(tc_url: &str, stream_name: &str) -> RtmpUrl {
+    let full_url = format!("{}/{}", tc_url, stream_name);
+    RtmpUrl::from_str(&full_url).expect("valid RTMP URL")
+}
+
 /// Publish クライアントを Publishing 状態まで遷移させる
 fn setup_publishing_client(tc_url: &str, stream_name: &str) -> RtmpPublishClientConnection {
-    let mut client = RtmpPublishClientConnection::new(tc_url, stream_name);
+    let url = construct_rtmp_url(tc_url, stream_name);
+    let mut client = RtmpPublishClientConnection::new(url);
     let mut server = RtmpServerHandshake::new();
 
     let c0_c1 = client.send_buf().to_vec();
@@ -206,7 +214,8 @@ fn setup_publishing_client(tc_url: &str, stream_name: &str) -> RtmpPublishClient
 
 /// Play クライアントを Playing 状態まで遷移させる
 fn setup_playing_client(tc_url: &str, stream_name: &str) -> RtmpPlayClientConnection {
-    let mut client = RtmpPlayClientConnection::new(tc_url, stream_name);
+    let url = construct_rtmp_url(tc_url, stream_name);
+    let mut client = RtmpPlayClientConnection::new(url);
     let mut server = RtmpServerHandshake::new();
 
     let c0_c1 = client.send_buf().to_vec();
@@ -274,7 +283,8 @@ proptest! {
     /// Publish 接続の一連の遷移が成立することを検証
     #[test]
     fn publish_client_flow(tc_url in arb_tc_url(), stream_name in arb_small_string()) {
-        let mut client = RtmpPublishClientConnection::new(&tc_url, &stream_name);
+        let url = construct_rtmp_url(&tc_url, &stream_name);
+        let mut client = RtmpPublishClientConnection::new(url);
         let mut server = RtmpServerHandshake::new();
 
         let c0_c1 = client.send_buf().to_vec();
@@ -317,7 +327,8 @@ proptest! {
     /// Play 接続の一連の遷移が成立することを検証
     #[test]
     fn play_client_flow(tc_url in arb_tc_url(), stream_name in arb_small_string()) {
-        let mut client = RtmpPlayClientConnection::new(&tc_url, &stream_name);
+        let url = construct_rtmp_url(&tc_url, &stream_name);
+        let mut client = RtmpPlayClientConnection::new(url);
         let mut server = RtmpServerHandshake::new();
 
         let c0_c1 = client.send_buf().to_vec();
@@ -366,7 +377,8 @@ proptest! {
         ack_seq in any::<u32>(),
         peer_bandwidth in any::<u32>(),
     ) {
-        let mut client = RtmpPublishClientConnection::new(&tc_url, &stream_name);
+        let url = construct_rtmp_url(&tc_url, &stream_name);
+        let mut client = RtmpPublishClientConnection::new(url);
         let mut server = RtmpServerHandshake::new();
         drain_events(&mut client);
 
@@ -474,14 +486,9 @@ proptest! {
 
     /// tcUrl 不正時にエラーになることを検証
     #[test]
-    fn invalid_tc_url_rejected(stream_name in arb_small_string()) {
-        let mut client = RtmpPublishClientConnection::new("invalid", &stream_name);
-        let mut server = RtmpServerHandshake::new();
-
-        let c0_c1 = client.send_buf().to_vec();
-        client.advance_send_buf(c0_c1.len());
-        let s0_s1_s2 = perform_handshake_client(&c0_c1, &mut server);
-        let result = client.feed_recv_buf(&s0_s1_s2);
+    fn invalid_tc_url_rejected(_stream_name in arb_small_string()) {
+        // 不正な URL なので RtmpUrl::from_str が失敗することを確認
+        let result = RtmpUrl::from_str("invalid");
         prop_assert!(result.is_err());
     }
 
@@ -562,7 +569,8 @@ proptest! {
         stream_name in arb_small_string(),
         error_desc in arb_small_string(),
     ) {
-        let mut client = RtmpPublishClientConnection::new(&tc_url, &stream_name);
+        let url = construct_rtmp_url(&tc_url, &stream_name);
+        let mut client = RtmpPublishClientConnection::new(url);
         let mut server = RtmpServerHandshake::new();
 
         let c0_c1 = client.send_buf().to_vec();
