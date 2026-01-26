@@ -2,9 +2,7 @@ use crate::Error;
 
 /// RTMP 用の URL
 ///
-/// この構造体は `rtmp://host:port/app/stream_name` または `rtmps://host:port/app/stream_name` 形式の URL に対応しています:
-/// - ポート番号が省略された場合、rtmp は 1935、rtmps は 443 がデフォルトで使用されます
-/// - パス部分に複数の `/` が含まれる場合、最後の `/` で app と stream_name に分割されます
+/// [`std::str::FromStr`] の実装では [`RtmpUrl::parse_with_stream_name()`] が使用されます
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct RtmpUrl {
     /// RTMP サーバーのホスト名または IP アドレス
@@ -23,48 +21,17 @@ pub struct RtmpUrl {
     pub tls: bool,
 }
 
-impl std::fmt::Display for RtmpUrl {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let scheme = if self.tls { "rtmps" } else { "rtmp" };
-        write!(
-            f,
-            "{}://{}:{}/{}/{}",
-            scheme, self.host, self.port, self.app, self.stream_name
-        )
-    }
-}
+impl RtmpUrl {
+    /// ストリーム名を含んだ形式の RTMP URL をパースします: `rtmp[s]://host[:port]/app/stream_name`
+    ///
+    /// パス部分に複数の `/` が含まれる場合、最後の `/` でアプリケーション名とストリーム名に分割されます
+    ///
+    /// ポートが省略された場合、デフォルトポートが使用されます:
+    /// - rtmp: 1935
+    /// - rtmps: 443
+    pub fn parse_with_stream_name(s: &str) -> Result<Self, Error> {
+        let (tls, host, port, path) = Self::parse_scheme_and_host_port(s)?;
 
-impl std::str::FromStr for RtmpUrl {
-    type Err = Error;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        // scheme://
-        let (scheme, rest) = s
-            .split_once("://")
-            .ok_or_else(|| Error::invalid_input("missing '://' in RTMP URL"))?;
-        let tls = match scheme {
-            "rtmp" => false,
-            "rtmps" => true,
-            _ => {
-                return Err(Error::invalid_input(format!(
-                    "invalid scheme '{scheme}', expected 'rtmp' or 'rtmps'"
-                )));
-            }
-        };
-
-        // host[:port]/app/stream_name
-        let (host_port, path) = rest
-            .split_once('/')
-            .ok_or_else(|| Error::invalid_input("missing '/' separator for app name"))?;
-
-        // host, port
-        let (host, port) = parse_host_port(host_port, tls)?;
-
-        if host.is_empty() {
-            return Err(Error::invalid_input("host cannot be empty"));
-        }
-
-        // app, stream_name
         let (app, stream_name) = path
             .rsplit_once('/')
             .ok_or_else(|| Error::invalid_input("missing app and/or stream_name in path"))?;
@@ -83,10 +50,80 @@ impl std::str::FromStr for RtmpUrl {
             tls,
         })
     }
+
+    /// ストリーム名を含まない形式の RTMP URL をパースします: `rtmp[s]://host[:port]/app`
+    ///
+    /// ストリーム名は空文字列になります。
+    ///
+    /// ポートが省略された場合、デフォルトポートが使用されます:
+    /// - rtmp: 1935
+    /// - rtmps: 443
+    pub fn parse_without_stream_name(s: &str) -> Result<Self, Error> {
+        let (tls, host, port, app) = Self::parse_scheme_and_host_port(s)?;
+
+        if app.is_empty() {
+            return Err(Error::invalid_input("app name cannot be empty"));
+        }
+
+        Ok(RtmpUrl {
+            host: host.to_owned(),
+            port,
+            app: app.to_owned(),
+            stream_name: String::new(),
+            tls,
+        })
+    }
+
+    fn parse_scheme_and_host_port(s: &str) -> Result<(bool, &str, u16, &str), Error> {
+        // scheme://
+        let (scheme, rest) = s
+            .split_once("://")
+            .ok_or_else(|| Error::invalid_input("missing '://' in RTMP URL"))?;
+        let tls = match scheme {
+            "rtmp" => false,
+            "rtmps" => true,
+            _ => {
+                return Err(Error::invalid_input(format!(
+                    "invalid scheme '{scheme}', expected 'rtmp' or 'rtmps'"
+                )));
+            }
+        };
+
+        // host[:port]/path
+        let (host_port, path) = rest
+            .split_once('/')
+            .ok_or_else(|| Error::invalid_input("missing '/' separator for app name"))?;
+
+        // host, port
+        let (host, port) = parse_host_port(host_port, tls)?;
+
+        if host.is_empty() {
+            return Err(Error::invalid_input("host cannot be empty"));
+        }
+
+        Ok((tls, host, port, path))
+    }
 }
 
-/// ホストとポート番号をパースする
-/// IPv4、IPv6、ホスト名に対応
+impl std::fmt::Display for RtmpUrl {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let scheme = if self.tls { "rtmps" } else { "rtmp" };
+        write!(
+            f,
+            "{}://{}:{}/{}/{}",
+            scheme, self.host, self.port, self.app, self.stream_name
+        )
+    }
+}
+
+impl std::str::FromStr for RtmpUrl {
+    type Err = Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Self::parse_with_stream_name(s)
+    }
+}
+
 fn parse_host_port(host_port: &str, tls: bool) -> Result<(&str, u16), Error> {
     // ポート番号が含まれているかチェック
     // IPv6 アドレスの場合は ] の後ろにポートがある
