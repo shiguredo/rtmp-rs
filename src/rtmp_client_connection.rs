@@ -57,6 +57,11 @@ impl RtmpPublishClientConnection {
         self.inner.advance_send_buf(n)
     }
 
+    /// コネクションの現在の状態を返す
+    pub fn state(&self) -> RtmpConnectionState {
+        self.inner.state
+    }
+
     /// 音声フレームを送信する（送信バッファに追加する）
     pub fn send_audio(&mut self, frame: AudioFrame) -> Result<(), Error> {
         self.inner.state.expect(RtmpConnectionState::Publishing)?;
@@ -156,6 +161,11 @@ impl RtmpPlayClientConnection {
     /// 送信バッファから指定バイト数を送信済みとしてマークする
     pub fn advance_send_buf(&mut self, n: usize) {
         self.inner.advance_send_buf(n)
+    }
+
+    /// コネクションの現在の状態を返す
+    pub fn state(&self) -> RtmpConnectionState {
+        self.inner.state
     }
 
     /// 次のイベントを取得する

@@ -301,6 +301,11 @@ impl RtmpServerConnection {
         }
     }
 
+    /// コネクションの現在の状態を返す
+    pub fn state(&self) -> RtmpConnectionState {
+        self.state
+    }
+
     /// 配信（Publish）または再生（Play）のリクエストを受理する
     ///
     /// [`RtmpConnectionState::PublishPending`] または [`RtmpConnectionState::PlayPending`] 状態の時に呼び出すことで、
