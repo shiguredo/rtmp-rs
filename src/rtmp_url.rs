@@ -2,7 +2,10 @@ use crate::Error;
 
 /// RTMP 用の URL
 ///
-/// [`std::str::FromStr`] の実装では [`RtmpUrl::parse_with_stream_name()`] が使用されます
+/// # NOTE
+///
+/// [`std::str::FromStr`] の実装では [`RtmpUrl::parse()`] が使用されます。
+/// もしストリーム名を URL 文字列とは別に指定したい場合には [`RtmpUrl::parse_with_stream_name()`] を使用してください。
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct RtmpUrl {
     /// RTMP サーバーのホスト名または IP アドレス
@@ -22,14 +25,14 @@ pub struct RtmpUrl {
 }
 
 impl RtmpUrl {
-    /// ストリーム名を含んだ形式の RTMP URL をパースします: `rtmp[s]://host[:port]/app/stream_name`
+    /// ストリーム名を含む RTMP URL をパースします: `rtmp[s]://host[:port]/app/stream_name`
     ///
     /// パス部分に複数の `/` が含まれる場合、最後の `/` でアプリケーション名とストリーム名に分割されます
     ///
     /// ポートが省略された場合、デフォルトポートが使用されます:
     /// - rtmp: 1935
     /// - rtmps: 443
-    pub fn parse_with_stream_name(s: &str) -> Result<Self, Error> {
+    pub fn parse(s: &str) -> Result<Self, Error> {
         let (tls, host, port, path) = Self::parse_scheme_and_host_port(s)?;
 
         let (app, stream_name) = path
@@ -51,25 +54,26 @@ impl RtmpUrl {
         })
     }
 
-    /// ストリーム名を含まない形式の RTMP URL をパースします: `rtmp[s]://host[:port]/app`
-    ///
-    /// ストリーム名は空文字列になります。
+    /// ストリーム名を別途指定して RTMP URL をパースします: `rtmp[s]://host[:port]/app`
     ///
     /// ポートが省略された場合、デフォルトポートが使用されます:
     /// - rtmp: 1935
     /// - rtmps: 443
-    pub fn parse_without_stream_name(s: &str) -> Result<Self, Error> {
+    pub fn parse_with_stream_name(s: &str, stream_name: &str) -> Result<Self, Error> {
         let (tls, host, port, app) = Self::parse_scheme_and_host_port(s)?;
 
         if app.is_empty() {
             return Err(Error::invalid_input("app name cannot be empty"));
+        }
+        if stream_name.is_empty() {
+            return Err(Error::invalid_input("stream name cannot be empty"));
         }
 
         Ok(RtmpUrl {
             host: host.to_owned(),
             port,
             app: app.to_owned(),
-            stream_name: String::new(),
+            stream_name: stream_name.to_owned(),
             tls,
         })
     }
@@ -120,7 +124,7 @@ impl std::str::FromStr for RtmpUrl {
     type Err = Error;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        Self::parse_with_stream_name(s)
+        Self::parse(s)
     }
 }
 
