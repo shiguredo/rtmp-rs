@@ -1,6 +1,4 @@
 use crate::Error;
-use std::net::IpAddr;
-use std::str::FromStr;
 
 /// RTMP 用の URL
 ///
@@ -132,9 +130,6 @@ fn parse_host_port(host_port: &str, tls: bool) -> Result<(&str, u16), Error> {
         }
     };
 
-    // ホスト部分の妥当性を確認（IpAddr または 有効なホスト名）
-    validate_host(host)?;
-
     // ポート番号をパース
     let port = match port_str {
         Some(port_s) => port_s
@@ -152,34 +147,11 @@ fn parse_host_port(host_port: &str, tls: bool) -> Result<(&str, u16), Error> {
     Ok((host, port))
 }
 
-/// ホスト部分の妥当性を確認
-/// IPv4、IPv6（[] で囲まれた形式）、ホスト名に対応
-fn validate_host(host: &str) -> Result<(), Error> {
-    if host.is_empty() {
-        return Err(Error::invalid_input("host cannot be empty"));
-    }
-
-    // IPv6 アドレスの場合
-    if host.starts_with('[') && host.ends_with(']') {
-        let ipv6_part = &host[1..host.len() - 1];
-        IpAddr::from_str(ipv6_part)
-            .map_err(|_| Error::invalid_input(format!("invalid IPv6 address '{ipv6_part}'")))?;
-        return Ok(());
-    }
-
-    // IPv4 アドレスの場合
-    if IpAddr::from_str(host).is_ok() {
-        return Ok(());
-    }
-
-    // [NOTE] ホスト名の場合は、形式の厳密なチェックまではこの crate の責務ではないため行わない
-
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use std::str::FromStr;
 
     #[test]
     fn test_basic_rtmp_url() {
@@ -376,8 +348,9 @@ mod tests {
 
     #[test]
     fn test_invalid_ipv6_address() {
+        // IPv6 部分の検証は RtmpUrl は行わないので成功する
         let result = RtmpUrl::from_str("rtmp://[::gggg]:1935/live/stream");
-        assert!(result.is_err());
+        assert!(result.is_ok());
     }
 
     #[test]
