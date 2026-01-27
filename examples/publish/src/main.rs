@@ -241,8 +241,8 @@ async fn run_publishing_loop(
         }
 
         // 送信バッファをソケットに書き込む
-        let send_data = connection.send_buf();
-        if !send_data.is_empty() {
+        while !connection.send_buf().is_empty() {
+            let send_data = connection.send_buf();
             socket.write_all(send_data).await.ok();
             connection.advance_send_buf(send_data.len());
         }
