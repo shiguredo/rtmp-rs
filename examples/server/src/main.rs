@@ -289,10 +289,10 @@ impl ClientConnectionHandler {
             Some(frame) = self.media_rx.recv() => {
                 self.process_media_frame(frame)?;
                 // 送信バッファにデータがあれば送信
-                let send_data = self.conn.send_buf();
-                if !send_data.is_empty() {
+                while !self.conn.send_buf().is_empty() {
+                    let send_data =self.conn.send_buf();
                     self.stream.write_all(send_data).await?;
-                     let len = send_data.len();
+                    let len = send_data.len();
                     self.conn.advance_send_buf(len);
                 }
             }
