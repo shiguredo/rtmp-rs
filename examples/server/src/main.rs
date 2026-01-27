@@ -283,17 +283,23 @@ impl ClientConnectionHandler {
     }
 
     async fn run_one(&mut self) -> Result<bool, Error> {
+        // イベント処理
+        while let Some(event) = self.conn.next_event() {
+            self.process_event(event).await?;
+        }
+
+        // 送信バッファにデータがあれば送信
+        while !self.conn.send_buf().is_empty() {
+            let send_data = self.conn.send_buf();
+            self.stream.write_all(send_data).await?;
+            let len = send_data.len();
+            self.conn.advance_send_buf(len);
+        }
+
         tokio::select! {
             // 配信側から送られてきたフレームを受信側に転送する
             Some(frame) = self.media_rx.recv() => {
                 self.process_media_frame(frame)?;
-                // 送信バッファにデータがあれば送信
-                while !self.conn.send_buf().is_empty() {
-                    let send_data =self.conn.send_buf();
-                    self.stream.write_all(send_data).await?;
-                    let len = send_data.len();
-                    self.conn.advance_send_buf(len);
-                }
             }
 
             // ソケットからデータを受信
@@ -305,19 +311,6 @@ impl ClientConnectionHandler {
                     }
                     Err(e) if e.kind() == std::io::ErrorKind::ConnectionReset => return Ok(false),
                     Err(e) => return Err(e.into()),
-                }
-
-                // イベント処理
-                while let Some(event) = self.conn.next_event() {
-                    self.process_event(event).await?;
-                }
-
-                // 送信バッファにデータがあれば送信
-                while !self.conn.send_buf().is_empty() {
-                    let send_data = self.conn.send_buf();
-                    self.stream.write_all(send_data).await?;
-                    let len = send_data.len();
-                    self.conn.advance_send_buf(len);
                 }
             }
         }
