@@ -13,7 +13,6 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::Duration;
 
 use rustls::ServerConfig;
 use rustls::pki_types::pem::PemObject;
@@ -284,42 +283,34 @@ impl ClientConnectionHandler {
     }
 
     async fn run_one(&mut self) -> Result<bool, Error> {
+        // イベント処理
+        while let Some(event) = self.conn.next_event() {
+            self.process_event(event).await?;
+        }
+
+        // 送信バッファにデータがあれば送信
+        while !self.conn.send_buf().is_empty() {
+            let send_data = self.conn.send_buf();
+            self.stream.write_all(send_data).await?;
+            let len = send_data.len();
+            self.conn.advance_send_buf(len);
+        }
+
         tokio::select! {
             // 配信側から送られてきたフレームを受信側に転送する
             Some(frame) = self.media_rx.recv() => {
                 self.process_media_frame(frame)?;
-                // 送信バッファにデータがあれば送信
-                let send_data = self.conn.send_buf();
-                if !send_data.is_empty() {
-                    self.stream.write_all(send_data).await?;
-                     let len = send_data.len();
-                    self.conn.advance_send_buf(len);
-                }
             }
 
             // ソケットからデータを受信
-            result = tokio::time::timeout(Duration::from_millis(5), self.stream.read(&mut self.recv_buf)) => {
+            result = self.stream.read(&mut self.recv_buf) => {
                 match result {
-                    Ok(Ok(0)) => return Ok(false), // 接続が切断された
-                    Ok(Ok(n)) => {
+                    Ok(0) => return Ok(false), // 接続が切断された
+                    Ok(n) => {
                         self.conn.feed_recv_buf(&self.recv_buf[..n])?;
                     }
-                    Ok(Err(e)) if e.kind() == std::io::ErrorKind::ConnectionReset => return Ok(false),
-                    Ok(Err(e)) => return Err(e.into()),
-                    Err(_) => {} // タイムアウト（継続）
-                }
-
-                // イベント処理
-                while let Some(event) = self.conn.next_event() {
-                    self.process_event(event).await?;
-                }
-
-                // 送信バッファにデータがあれば送信
-                let send_data = self.conn.send_buf();
-                if !send_data.is_empty() {
-                    self.stream.write_all(send_data).await?;
-                    let len = send_data.len();
-                    self.conn.advance_send_buf(len);
+                    Err(e) if e.kind() == std::io::ErrorKind::ConnectionReset => return Ok(false),
+                    Err(e) => return Err(e.into()),
                 }
             }
         }

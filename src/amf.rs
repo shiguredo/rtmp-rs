@@ -29,6 +29,7 @@ impl AmfValue {
         }
     }
 
+    #[track_caller]
     pub fn expect_object_member(&self, key: &str) -> Result<AmfValueRef<'_>, Error> {
         match self {
             Self::Amf0(Amf0Value::Object { entries, .. }) => entries
@@ -45,10 +46,12 @@ impl AmfValue {
         }
     }
 
+    #[track_caller]
     pub fn expect_str(&self) -> Result<&str, Error> {
         self.to_ref().expect_str()
     }
 
+    #[track_caller]
     pub fn expect_number(&self) -> Result<f64, Error> {
         self.to_ref().expect_number()
     }

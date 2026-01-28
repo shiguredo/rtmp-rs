@@ -10,6 +10,7 @@
 //!   # RTMPS (URL スキーム)
 //!   cargo run -p publish -- -u rtmps://example.com/live/test input.mp4
 
+use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -153,7 +154,8 @@ async fn publish_mp4_to_rtmp(
     let tracks = demuxer.tracks()?;
     println!("Found {} track(s)", tracks.len());
 
-    validate_codecs(&mut demuxer)?;
+    // 配信対象となるトラックIDの集合を取得
+    let publishable_track_ids = validate_codecs(&mut demuxer)?;
 
     // 再度デマルチプレックスを初期化してから配信を開始
     let mut demuxer = Mp4FileDemuxer::new();
@@ -176,6 +178,7 @@ async fn publish_mp4_to_rtmp(
         &mut socket,
         &mut demuxer,
         &file_data,
+        &publishable_track_ids,
         verbose,
     )
     .await?;
@@ -212,6 +215,7 @@ async fn run_publishing_loop(
     socket: &mut RtmpStream,
     demuxer: &mut Mp4FileDemuxer,
     file_data: &[u8],
+    publishable_track_ids: &HashSet<u32>,
     verbose: bool,
 ) -> noargs::Result<()> {
     let mut recv_buf = vec![0u8; 8192];
@@ -237,8 +241,8 @@ async fn run_publishing_loop(
         }
 
         // 送信バッファをソケットに書き込む
-        let send_data = connection.send_buf();
-        if !send_data.is_empty() {
+        while !connection.send_buf().is_empty() {
+            let send_data = connection.send_buf();
             socket.write_all(send_data).await.ok();
             connection.advance_send_buf(send_data.len());
         }
@@ -260,6 +264,11 @@ async fn run_publishing_loop(
         let Some(sample) = demuxer.next_sample()? else {
             break; // 全てのサンプルを送信した
         };
+
+        // フィルタリング: 配信対象トラックのみ処理
+        if !publishable_track_ids.contains(&(sample.track.track_id)) {
+            continue;
+        }
 
         // タイムスタンプに基づいて配信ペースを制御する
         let elapsed = start_time.elapsed();
@@ -376,8 +385,7 @@ fn send_audio_sample(
     let is_8bit = mp4a_box.audio.samplesize == 8;
 
     // シーケンスヘッダーを送信する（最初のサンプルの場合）
-    if is_first {
-        let audio_config = create_aac_audio_specific_config(mp4a_box)?;
+    if is_first && let Some(audio_config) = create_aac_audio_specific_config(mp4a_box) {
         let seq_frame = AudioFrame {
             timestamp: RtmpTimestamp::from_millis(timestamp_ms),
             format: AudioFormat::Aac,
@@ -406,15 +414,15 @@ fn send_audio_sample(
 }
 
 /// AAC の AudioSpecificConfig を作成する
-fn create_aac_audio_specific_config(
-    mp4a_box: &shiguredo_mp4::boxes::Mp4aBox,
-) -> noargs::Result<Vec<u8>> {
+fn create_aac_audio_specific_config(mp4a_box: &shiguredo_mp4::boxes::Mp4aBox) -> Option<Vec<u8>> {
     // EsdsBox から DecoderSpecificInfo を取得
-    if let Some(dec_specific_info) = &mp4a_box.esds_box.es.dec_config_descr.dec_specific_info {
-        Ok(dec_specific_info.payload.clone())
-    } else {
-        Err("No decoder specific info available".into())
-    }
+    mp4a_box
+        .esds_box
+        .es
+        .dec_config_descr
+        .dec_specific_info
+        .as_ref()
+        .map(|dec_specific_info| dec_specific_info.payload.clone())
 }
 
 /// MP4 ファイルの H.264 映像フレームの形式を RTMP がサポートしている Annex B 形式に変換する
@@ -474,39 +482,44 @@ fn create_avc_sequence_header_annexb(sps_list: &[Vec<u8>], pps_list: &[Vec<u8>])
     result
 }
 
-// 入力ファイルのコーデックが H.264 / ACC かどうかをチェックする
-fn validate_codecs(demuxer: &mut Mp4FileDemuxer) -> noargs::Result<()> {
-    let mut has_h264_video = false;
-    let mut has_aac_audio = false;
+/// 入力ファイルのコーデックが H.264 / AAC かどうかをチェックし、配信対象となるトラックIDの集合を返す
+fn validate_codecs(demuxer: &mut Mp4FileDemuxer) -> noargs::Result<HashSet<u32>> {
+    let mut publishable_track_ids = HashSet::new();
+    let mut processed_track_ids = HashSet::new();
 
     while let Some(sample) = demuxer.next_sample()? {
+        let track_id = sample.track.track_id;
+
+        // 同じトラックIDは1回だけ処理
+        if processed_track_ids.contains(&track_id) {
+            continue;
+        }
+        processed_track_ids.insert(track_id);
+
         if let Some(sample_entry) = sample.sample_entry {
             match sample_entry {
                 shiguredo_mp4::boxes::SampleEntry::Avc1(_) => {
-                    has_h264_video = true;
-                    println!("✓ Found H.264 video codec");
+                    println!("✓ Track {} - Found H.264 video codec", track_id);
+                    publishable_track_ids.insert(track_id);
                 }
                 shiguredo_mp4::boxes::SampleEntry::Mp4a(_) => {
-                    has_aac_audio = true;
-                    println!("✓ Found AAC audio codec");
+                    println!("✓ Track {} - Found AAC audio codec", track_id);
+                    publishable_track_ids.insert(track_id);
                 }
                 other => {
-                    // サポートされていないコーデックが見つかった場合はエラー
-                    Err(format!(
-                        "Unsupported codec found: {other:?}. Only H.264 video and AAC audio are supported."
-                    ))?;
+                    println!("⚠ Track {} - Unsupported codec: {other:?}", track_id);
                 }
             }
         }
     }
 
-    // ビデオまたはオーディオが見つからない場合は警告を出すが続行する
-    if !has_h264_video {
-        println!("⚠ No H.264 video codec found");
-    }
-    if !has_aac_audio {
-        println!("⚠ No AAC audio codec found");
+    // 映像も音声も利用可能なものが見つからなかった場合はエラー
+    if publishable_track_ids.is_empty() {
+        return Err(
+            "No supported codecs found. At least H.264 video or AAC audio is required.".into(),
+        );
     }
 
-    Ok(())
+    println!("Total publishable tracks: {}", publishable_track_ids.len());
+    Ok(publishable_track_ids)
 }

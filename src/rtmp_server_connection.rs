@@ -57,23 +57,26 @@ impl RtmpServerConnection {
 
     /// クライアントから受信したデータを処理する
     pub fn feed_recv_buf(&mut self, buf: &[u8]) -> Result<(), Error> {
-        if self.state == RtmpConnectionState::Handshaking {
+        let feed_result = if self.state == RtmpConnectionState::Handshaking {
             self.handshake.feed_recv_buf(buf)?;
-            if self.handshake.is_recv_complete() {
-                self.change_state(RtmpConnectionState::Connecting);
-                let remaining_recv_buf = self.handshake.take_recv_buf();
-                self.message_channel.feed_recv_buf(&remaining_recv_buf)?;
+            if !self.handshake.is_recv_complete() {
+                return Ok(());
             }
+            self.change_state(RtmpConnectionState::Connecting);
+            let remaining_recv_buf = self.handshake.take_recv_buf();
+            self.message_channel.feed_recv_buf(&remaining_recv_buf)?
         } else {
-            // ACK メッセージを送信する必要があるかを確認
-            if let Some(total_bytes_received) = self.message_channel.feed_recv_buf(buf)? {
-                // ACK メッセージを送信
-                let ack_message = RtmpMessage::ack(total_bytes_received);
-                self.message_channel.feed_send_message(ack_message);
-            }
-            while let Some(message) = self.message_channel.next_recv_message() {
-                self.handle_recv_message(message)?;
-            }
+            self.message_channel.feed_recv_buf(buf)?
+        };
+
+        // ACK メッセージを送信する必要があるかを確認
+        if let Some(total_bytes_received) = feed_result {
+            // ACK メッセージを送信
+            let ack_message = RtmpMessage::ack(total_bytes_received);
+            self.message_channel.feed_send_message(ack_message);
+        }
+        while let Some(message) = self.message_channel.next_recv_message() {
+            self.handle_recv_message(message)?;
         }
         Ok(())
     }
@@ -299,6 +302,11 @@ impl RtmpServerConnection {
                 });
             self.change_state(RtmpConnectionState::Disconnecting);
         }
+    }
+
+    /// コネクションの現在の状態を返す
+    pub fn state(&self) -> RtmpConnectionState {
+        self.state
     }
 
     /// 配信（Publish）または再生（Play）のリクエストを受理する

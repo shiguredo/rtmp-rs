@@ -75,11 +75,11 @@ impl RtmpCommand {
                 let mut pairs = vec![
                     ("level".to_string(), Amf0Value::String(cmd.level)),
                     ("code".to_string(), Amf0Value::String(cmd.code)),
-                    (
-                        "description".to_string(),
-                        Amf0Value::String(cmd.description),
-                    ),
                 ];
+
+                if let Some(description) = cmd.description {
+                    pairs.push(("description".to_string(), Amf0Value::String(description)));
+                }
 
                 if let Some(details) = cmd.details {
                     pairs.push(("details".to_string(), Amf0Value::String(details)));
@@ -521,7 +521,7 @@ impl RtmpResultCommand {
 pub struct RtmpOnStatusCommand {
     pub level: String,
     pub code: String,
-    pub description: String,
+    pub description: Option<String>,
     pub details: Option<String>,
 }
 
@@ -543,10 +543,13 @@ impl RtmpOnStatusCommand {
             .expect_object_member("code")?
             .expect_str()?
             .to_string();
+
         let description = status_obj
-            .expect_object_member("description")?
-            .expect_str()?
-            .to_string();
+            .expect_object_member("description")
+            .ok()
+            .and_then(|v| v.expect_str().ok())
+            .map(|s| s.to_string());
+
         let details = status_obj
             .expect_object_member("details")
             .ok()
@@ -573,7 +576,7 @@ impl RtmpOnStatusCommand {
         Self {
             level: "status".to_string(),
             code: "NetStream.Publish.Start".to_string(),
-            description: "Publish succeeded.".to_string(),
+            description: Some("Publish succeeded.".to_string()),
             details: None,
         }
     }
@@ -582,7 +585,7 @@ impl RtmpOnStatusCommand {
         Self {
             level: "status".to_string(),
             code: "NetStream.Play.Start".to_string(),
-            description: "Play succeeded.".to_string(),
+            description: Some("Play succeeded.".to_string()),
             details: None,
         }
     }
@@ -591,7 +594,7 @@ impl RtmpOnStatusCommand {
         Self {
             level: "error".to_string(),
             code: "NetStream.Publish.BadName".to_string(),
-            description: "Stream name already in use.".to_string(),
+            description: Some("Stream name already in use.".to_string()),
             details: Some(reason.to_string()),
         }
     }
@@ -600,7 +603,7 @@ impl RtmpOnStatusCommand {
         Self {
             level: "error".to_string(),
             code: "NetStream.Play.StreamNotFound".to_string(),
-            description: "Stream not found.".to_string(),
+            description: Some("Stream not found.".to_string()),
             details: Some(reason.to_string()),
         }
     }
