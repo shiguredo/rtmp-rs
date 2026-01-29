@@ -336,23 +336,23 @@ fn send_video_sample(
             connection.send_video(seq_frame)?;
             println!("Sent AVC Sequence Header");
         }
-
-        // 映像データ本体を送信する
-        // MP4 形式では NAL unit length prefix を使用しているため、直接送信可能
-        let frame = VideoFrame {
-            timestamp: RtmpTimestamp::from_millis(timestamp_ms),
-            composition_timestamp_offset: RtmpTimestampDelta::ZERO, // B フレームは存在しない前提
-            frame_type: if sample.keyframe {
-                VideoFrameType::KeyFrame
-            } else {
-                VideoFrameType::InterFrame
-            },
-            codec: VideoCodec::Avc,
-            avc_packet_type: Some(AvcPacketType::NalUnit),
-            data: sample_data.to_vec(),
-        };
-        connection.send_video(frame)?;
     }
+
+    // 映像データ本体を送信する
+    // MP4 形式では NAL unit length prefix を使用しているため、直接送信可能
+    let frame = VideoFrame {
+        timestamp: RtmpTimestamp::from_millis(timestamp_ms),
+        composition_timestamp_offset: RtmpTimestampDelta::ZERO, // B フレームは存在しない前提
+        frame_type: if sample.keyframe {
+            VideoFrameType::KeyFrame
+        } else {
+            VideoFrameType::InterFrame
+        },
+        codec: VideoCodec::Avc,
+        avc_packet_type: Some(AvcPacketType::NalUnit),
+        data: sample_data.to_vec(),
+    };
+    connection.send_video(frame)?;
 
     Ok(())
 }
