@@ -407,20 +407,19 @@ fn send_audio_sample(
     let is_8bit = mp4a_box.audio.samplesize == 8;
 
     // シーケンスヘッダーを送信する（最初のサンプルの場合）
-    if is_first
-        && let Some(audio_config) = create_aac_audio_specific_config(mp4a_box) {
-            let seq_frame = AudioFrame {
-                timestamp: RtmpTimestamp::from_millis(timestamp_ms),
-                format: AudioFormat::Aac,
-                sample_rate: AudioFrame::AAC_SAMPLE_RATE,
-                is_stereo: AudioFrame::AAC_STEREO,
-                is_8bit_sample: is_8bit,
-                is_aac_sequence_header: true,
-                data: audio_config,
-            };
-            connection.send_audio(seq_frame)?;
-            println!("Sent AAC Sequence Header");
-        }
+    if is_first && let Some(audio_config) = create_aac_audio_specific_config(mp4a_box) {
+        let seq_frame = AudioFrame {
+            timestamp: RtmpTimestamp::from_millis(timestamp_ms),
+            format: AudioFormat::Aac,
+            sample_rate: AudioFrame::AAC_SAMPLE_RATE,
+            is_stereo: AudioFrame::AAC_STEREO,
+            is_8bit_sample: is_8bit,
+            is_aac_sequence_header: true,
+            data: audio_config,
+        };
+        connection.send_audio(seq_frame)?;
+        println!("Sent AAC Sequence Header");
+    }
 
     // 音声データ本体を送信する
     let frame = AudioFrame {
