@@ -24,8 +24,8 @@ mod rtmp_user_control_event;
 
 pub use error::{Error, ErrorKind};
 pub use media::{
-    AudioFormat, AudioFrame, AudioSampleRate, AvcPacketType, MediaFrame, VideoCodec, VideoFrame,
-    VideoFrameType,
+    AudioFormat, AudioFrame, AudioSampleRate, AvcPacketType, AvcSequenceHeader, MediaFrame,
+    VideoCodec, VideoFrame, VideoFrameType,
 };
 pub use rtmp_client_connection::{RtmpPlayClientConnection, RtmpPublishClientConnection};
 pub use rtmp_connection::{RtmpConnectionEvent, RtmpConnectionState};

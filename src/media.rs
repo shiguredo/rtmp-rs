@@ -1,3 +1,4 @@
+use crate::Error;
 use crate::rtmp_timestamp::{RtmpTimestamp, RtmpTimestampDelta};
 
 /// メディアフレーム（音声または映像）
@@ -191,4 +192,143 @@ pub enum AudioSampleRate {
 
     /// 44kHz サンプリングレート
     Khz44 = 3,
+}
+
+/// AVC（H.264）デコーダ設定データ（AVCDecoderConfigurationRecord）を表す構造体
+///
+/// FLV の AVC シーケンスヘッダー内に含まれるデコーダ設定情報を表現します。
+/// H.264 ビデオストリームをデコードするために必要な SPS（Sequence Parameter Set）
+/// と PPS（Picture Parameter Set）を含みます。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AvcSequenceHeader {
+    /// 設定バージョン（通常は 1）
+    pub configuration_version: u8,
+
+    /// AVC プロファイルインジケーション
+    pub avc_profile_indication: u8,
+
+    /// プロファイル互換性フラグ
+    pub profile_compatibility: u8,
+
+    /// AVC レベルインジケーション
+    pub avc_level_indication: u8,
+
+    /// NAL ユニット長フィールドのサイズ - 1（通常は 3、つまり 4 バイト）
+    pub length_size_minus_one: u8,
+
+    /// Sequence Parameter Set（SPS）リスト
+    pub sps_list: Vec<Vec<u8>>,
+
+    /// Picture Parameter Set（PPS）リスト
+    pub pps_list: Vec<Vec<u8>>,
+}
+
+impl AvcSequenceHeader {
+    /// バイト列をパースして [`AvcSequenceHeader`] インスタンスを生成する
+    ///
+    /// 通常はこのバイト列は [`VideoFrame::avc_packet_type`] が [`AvcPacketType::SequenceHeader`] の場合に
+    /// [`VideoFrame::data`] に格納されている値となる
+    pub fn from_bytes(data: &[u8]) -> Result<Self, Error> {
+        if data.len() < 7 {
+            return Err(Error::invalid_data(
+                "AVCDecoderConfigurationRecord too short",
+            ));
+        }
+
+        let configuration_version = data[0];
+        if configuration_version != 1 {
+            return Err(Error::unsupported(format!(
+                "unsupported configuration version: {}",
+                configuration_version
+            )));
+        }
+
+        let avc_profile_indication = data[1];
+        let profile_compatibility = data[2];
+        let avc_level_indication = data[3];
+        let length_size_minus_one = data[4] & 0x03;
+
+        let mut offset = 5;
+        let mut sps_list = Vec::new();
+        let mut pps_list = Vec::new();
+
+        // SPS ユニット群をパース
+        if offset >= data.len() {
+            return Err(Error::invalid_data("incomplete SPS configuration"));
+        }
+        let num_sps = (data[offset] & 0x1F) as usize;
+        offset += 1;
+
+        for _ in 0..num_sps {
+            if offset + 2 > data.len() {
+                return Err(Error::invalid_data("incomplete SPS length field"));
+            }
+            let sps_length = u16::from_be_bytes([data[offset], data[offset + 1]]) as usize;
+            offset += 2;
+
+            if offset + sps_length > data.len() {
+                return Err(Error::invalid_data("incomplete SPS data"));
+            }
+            sps_list.push(data[offset..offset + sps_length].to_vec());
+            offset += sps_length;
+        }
+
+        // PPS ユニット群をパース
+        if offset >= data.len() {
+            return Err(Error::invalid_data("incomplete PPS count field"));
+        }
+        let num_pps = data[offset] as usize;
+        offset += 1;
+
+        for _ in 0..num_pps {
+            if offset + 2 > data.len() {
+                return Err(Error::invalid_data("incomplete PPS length field"));
+            }
+            let pps_length = u16::from_be_bytes([data[offset], data[offset + 1]]) as usize;
+            offset += 2;
+
+            if offset + pps_length > data.len() {
+                return Err(Error::invalid_data("incomplete PPS data"));
+            }
+            pps_list.push(data[offset..offset + pps_length].to_vec());
+            offset += pps_length;
+        }
+
+        Ok(Self {
+            configuration_version,
+            avc_profile_indication,
+            profile_compatibility,
+            avc_level_indication,
+            length_size_minus_one,
+            sps_list,
+            pps_list,
+        })
+    }
+
+    /// [`AvcSequenceHeader`] インスタンスを対応するバイト列に変換する
+    pub fn to_bytes(&self) -> Vec<u8> {
+        let mut result = Vec::new();
+
+        result.push(self.configuration_version);
+        result.push(self.avc_profile_indication);
+        result.push(self.profile_compatibility);
+        result.push(self.avc_level_indication);
+        result.push(0xFC | self.length_size_minus_one); // 上位 6 ビットは 1 で埋める
+
+        // SPS 数と SPS リスト
+        result.push(0xE0 | (self.sps_list.len() as u8)); // 上位 3 ビットは 1 で埋める
+        for sps in &self.sps_list {
+            result.extend_from_slice(&(sps.len() as u16).to_be_bytes());
+            result.extend_from_slice(sps);
+        }
+
+        // PPS 数と PPS リスト
+        result.push(self.pps_list.len() as u8);
+        for pps in &self.pps_list {
+            result.extend_from_slice(&(pps.len() as u16).to_be_bytes());
+            result.extend_from_slice(pps);
+        }
+
+        result
+    }
 }
