@@ -475,15 +475,14 @@ impl AvcSequenceHeader {
             }
         }
 
-        let mut result = Vec::new();
-
-        result.push(Self::CONFIGURATION_VERSION);
-        result.push(self.avc_profile_indication);
-        result.push(self.profile_compatibility);
-        result.push(self.avc_level_indication);
-
-        // length_size_minus_one: 下位 2 ビット、上位 6 ビットは 1 で埋める
-        result.push(0xFC | (self.length_size_minus_one & 0x03));
+        let mut result = vec![
+            Self::CONFIGURATION_VERSION,
+            self.avc_profile_indication,
+            self.profile_compatibility,
+            self.avc_level_indication,
+            // length_size_minus_one: 下位 2 ビット、上位 6 ビットは 1 で埋める
+            0xFC | (self.length_size_minus_one & 0x03),
+        ];
 
         // SPS 数と SPS リスト
         // SPS 数: 5 ビット、上位 3 ビットは 1 で埋める
