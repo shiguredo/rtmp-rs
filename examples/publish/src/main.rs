@@ -1,4 +1,4 @@
-//! RTMP/RTMPS パブリッシュクライアントの例 (tokio + tokio-rustls)
+//! RTMP/RTMPS 配信クライアントの例 (tokio + tokio-rustls)
 //!
 //! 使い方:
 //!   # RTMP (従来通り)
@@ -20,8 +20,8 @@ use rustls::pki_types::ServerName;
 use rustls_platform_verifier::ConfigVerifierExt;
 use shiguredo_mp4::demux::{Input, Mp4FileDemuxer};
 use shiguredo_rtmp::{
-    AudioFormat, AudioFrame, AvcPacketType, RtmpPublishClientConnection, RtmpTimestamp,
-    RtmpTimestampDelta, RtmpUrl, VideoCodec, VideoFrame, VideoFrameType,
+    AudioFormat, AudioFrame, AvcPacketType, AvcSequenceHeader, RtmpPublishClientConnection,
+    RtmpTimestamp, RtmpTimestampDelta, RtmpUrl, VideoCodec, VideoFrame, VideoFrameType,
 };
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
@@ -222,7 +222,6 @@ async fn run_publishing_loop(
     let start_time = Instant::now();
     let mut sample_count = 0;
     let mut publishing = false;
-    let mut nalu_length_size: u8 = 4; // 典型的な値をデフォルト値にしておく
     let mut last_mp4a_box: Option<shiguredo_mp4::boxes::Mp4aBox> = None;
 
     // イベント処理ループ
@@ -282,13 +281,7 @@ async fn run_publishing_loop(
         // トラックの種類に応じてフレームを送信
         match sample.track.kind {
             shiguredo_mp4::TrackKind::Video => {
-                send_video_sample(
-                    connection,
-                    &sample,
-                    sample_data,
-                    timestamp_ms,
-                    &mut nalu_length_size,
-                )?;
+                send_video_sample(connection, &sample, sample_data, timestamp_ms)?;
                 sample_count += 1;
             }
             shiguredo_mp4::TrackKind::Audio => {
@@ -315,49 +308,52 @@ fn send_video_sample(
     sample: &shiguredo_mp4::demux::Sample,
     sample_data: &[u8],
     timestamp_ms: u32,
-    nalu_length_size: &mut u8,
 ) -> noargs::Result<()> {
-    // ビデオトラックの SPS/PPS を取得
-    let mut video_sps_list = Vec::new();
-    let mut video_pps_list = Vec::new();
+    // ビデオトラックの設定を取得
     if let Some(sample_entry) = sample.sample_entry
         && let shiguredo_mp4::boxes::SampleEntry::Avc1(avc1_box) = sample_entry
     {
-        video_sps_list = avc1_box.avcc_box.sps_list.clone();
-        video_pps_list = avc1_box.avcc_box.pps_list.clone();
-        *nalu_length_size = avc1_box.avcc_box.length_size_minus_one.get() + 1;
-    }
+        // キーフレームの場合は SequenceHeader を先に送信する
+        if sample.keyframe {
+            let avc_seq_header = AvcSequenceHeader {
+                avc_profile_indication: avc1_box.avcc_box.avc_profile_indication,
+                profile_compatibility: avc1_box.avcc_box.profile_compatibility,
+                avc_level_indication: avc1_box.avcc_box.avc_level_indication,
+                length_size_minus_one: avc1_box.avcc_box.length_size_minus_one.get(),
+                sps_list: avc1_box.avcc_box.sps_list.clone(),
+                pps_list: avc1_box.avcc_box.pps_list.clone(),
+            };
 
-    // キーフレームの場合は SequenceHeader を先に送信する
-    if sample.keyframe && !video_sps_list.is_empty() {
-        let seq_header_data = create_avc_sequence_header_annexb(&video_sps_list, &video_pps_list);
-        let seq_frame = VideoFrame {
+            let seq_header_data = avc_seq_header.to_bytes()?;
+            let seq_frame = VideoFrame {
+                timestamp: RtmpTimestamp::from_millis(timestamp_ms),
+                composition_timestamp_offset: RtmpTimestampDelta::ZERO,
+                frame_type: VideoFrameType::KeyFrame,
+                codec: VideoCodec::Avc,
+                avc_packet_type: Some(AvcPacketType::SequenceHeader),
+                data: seq_header_data,
+            };
+            connection.send_video(seq_frame)?;
+            println!("Sent AVC Sequence Header");
+        }
+
+        // 映像データ本体を送信する
+        // MP4 形式では NAL unit length prefix を使用しているため、直接送信可能
+        let frame = VideoFrame {
             timestamp: RtmpTimestamp::from_millis(timestamp_ms),
-            composition_timestamp_offset: RtmpTimestampDelta::ZERO,
-            frame_type: VideoFrameType::KeyFrame,
+            composition_timestamp_offset: RtmpTimestampDelta::ZERO, // B フレームは存在しない前提
+            frame_type: if sample.keyframe {
+                VideoFrameType::KeyFrame
+            } else {
+                VideoFrameType::InterFrame
+            },
             codec: VideoCodec::Avc,
-            avc_packet_type: Some(AvcPacketType::SequenceHeader),
-            data: seq_header_data,
+            avc_packet_type: Some(AvcPacketType::NalUnit),
+            data: sample_data.to_vec(),
         };
-        connection.send_video(seq_frame)?;
-        println!("Sent AVC Sequence Header");
+        connection.send_video(frame)?;
     }
 
-    // 映像データ本体を送信する
-    let annexb_data = convert_nalu_to_annexb(sample_data, *nalu_length_size);
-    let frame = VideoFrame {
-        timestamp: RtmpTimestamp::from_millis(timestamp_ms),
-        composition_timestamp_offset: RtmpTimestampDelta::ZERO, // B フレームは存在しない前提
-        frame_type: if sample.keyframe {
-            VideoFrameType::KeyFrame
-        } else {
-            VideoFrameType::InterFrame
-        },
-        codec: VideoCodec::Avc,
-        avc_packet_type: Some(AvcPacketType::NalUnit),
-        data: annexb_data,
-    };
-    connection.send_video(frame)?;
     Ok(())
 }
 
@@ -385,18 +381,20 @@ fn send_audio_sample(
     let is_8bit = mp4a_box.audio.samplesize == 8;
 
     // シーケンスヘッダーを送信する（最初のサンプルの場合）
-    if is_first && let Some(audio_config) = create_aac_audio_specific_config(mp4a_box) {
-        let seq_frame = AudioFrame {
-            timestamp: RtmpTimestamp::from_millis(timestamp_ms),
-            format: AudioFormat::Aac,
-            sample_rate: AudioFrame::AAC_SAMPLE_RATE,
-            is_stereo: AudioFrame::AAC_STEREO,
-            is_8bit_sample: is_8bit,
-            is_aac_sequence_header: true,
-            data: audio_config,
-        };
-        connection.send_audio(seq_frame)?;
-        println!("Sent AAC Sequence Header");
+    if is_first {
+        if let Some(audio_config) = create_aac_audio_specific_config(mp4a_box) {
+            let seq_frame = AudioFrame {
+                timestamp: RtmpTimestamp::from_millis(timestamp_ms),
+                format: AudioFormat::Aac,
+                sample_rate: AudioFrame::AAC_SAMPLE_RATE,
+                is_stereo: AudioFrame::AAC_STEREO,
+                is_8bit_sample: is_8bit,
+                is_aac_sequence_header: true,
+                data: audio_config,
+            };
+            connection.send_audio(seq_frame)?;
+            println!("Sent AAC Sequence Header");
+        }
     }
 
     // 音声データ本体を送信する
@@ -423,63 +421,6 @@ fn create_aac_audio_specific_config(mp4a_box: &shiguredo_mp4::boxes::Mp4aBox) ->
         .dec_specific_info
         .as_ref()
         .map(|dec_specific_info| dec_specific_info.payload.clone())
-}
-
-/// MP4 ファイルの H.264 映像フレームの形式を RTMP がサポートしている Annex B 形式に変換する
-fn convert_nalu_to_annexb(data: &[u8], length_size: u8) -> Vec<u8> {
-    let mut result = Vec::new();
-    let mut offset = 0;
-    let length_size = length_size as usize;
-
-    while offset < data.len() {
-        if offset + length_size > data.len() {
-            break;
-        }
-
-        // MP4 ファイル形式で H.264 の NALU 長を読み取る
-        let length = match length_size {
-            1 => data[offset] as usize,
-            2 => u16::from_be_bytes([data[offset], data[offset + 1]]) as usize,
-            3 => u32::from_be_bytes([0, data[offset], data[offset + 1], data[offset + 2]]) as usize,
-            4 => u32::from_be_bytes([
-                data[offset],
-                data[offset + 1],
-                data[offset + 2],
-                data[offset + 3],
-            ]) as usize,
-            _ => {
-                unreachable!() // MP4 ライブラリがチェックしているのでここには来ないはず
-            }
-        };
-
-        offset += length_size;
-
-        if offset + length > data.len() {
-            break;
-        }
-
-        // Annex B の形式（先頭に固定の区切りバイト列が付与される）に変換する
-        result.extend_from_slice(&[0x00, 0x00, 0x00, 0x01]);
-        result.extend_from_slice(&data[offset..offset + length]);
-
-        offset += length;
-    }
-
-    result
-}
-
-/// H.264 のシーケンスヘッダ を RTMP がサポートしている Annex B 形式で作成する
-fn create_avc_sequence_header_annexb(sps_list: &[Vec<u8>], pps_list: &[Vec<u8>]) -> Vec<u8> {
-    let mut result = Vec::new();
-    for sps in sps_list {
-        result.extend_from_slice(&[0x00, 0x00, 0x00, 0x01]);
-        result.extend_from_slice(sps);
-    }
-    for pps in pps_list {
-        result.extend_from_slice(&[0x00, 0x00, 0x00, 0x01]);
-        result.extend_from_slice(pps);
-    }
-    result
 }
 
 /// 入力ファイルのコーデックが H.264 / AAC かどうかをチェックし、配信対象となるトラックIDの集合を返す
