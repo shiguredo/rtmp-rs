@@ -246,13 +246,15 @@ async fn run_publishing_loop(
             connection.advance_send_buf(send_data.len());
         }
 
-        // ソケットからデータを受信 (タイムアウト付き)
-        match tokio::time::timeout(Duration::from_millis(5), socket.read(&mut recv_buf)).await {
-            Ok(Ok(0)) => break, // 接続が切断された
-            Ok(Ok(n)) => connection.feed_recv_buf(&recv_buf[..n])?,
-            Ok(Err(e)) if e.kind() == std::io::ErrorKind::ConnectionReset => break,
-            Ok(Err(e)) => Err(e)?,
-            Err(_) => {} // タイムアウト（一度配信が始まったら、ほとんどの場合はここに来る）
+        // ソケットからデータを受信 (select! で次の送信タイミングと並行実行)
+        let next_send_interval = Duration::from_millis(5);
+        tokio::select! {
+            read_result = socket.read(&mut recv_buf) => {
+                handle_socket_read(read_result, connection, &recv_buf)?;
+            }
+            _ = tokio::time::sleep(next_send_interval) => {
+                // タイムアウト（タイマー満了）
+            }
         }
 
         if !publishing {
@@ -299,6 +301,30 @@ async fn run_publishing_loop(
 
     println!("Publishing completed ({sample_count} samples sent)");
 
+    Ok(())
+}
+
+/// ソケットからの読み込み結果を処理する
+fn handle_socket_read(
+    read_result: std::io::Result<usize>,
+    connection: &mut RtmpPublishClientConnection,
+    recv_buf: &[u8],
+) -> noargs::Result<()> {
+    match read_result {
+        Ok(0) => {
+            // 接続が切断された
+            return Err("Connection closed by server".into());
+        }
+        Ok(n) => {
+            connection.feed_recv_buf(&recv_buf[..n])?;
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::ConnectionReset => {
+            return Err(format!("Connection reset: {e}").into());
+        }
+        Err(e) => {
+            return Err(format!("Socket read error: {e}").into());
+        }
+    }
     Ok(())
 }
 
