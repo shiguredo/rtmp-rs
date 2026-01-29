@@ -199,6 +199,27 @@ pub enum AudioSampleRate {
 /// FLV の AVC シーケンスヘッダー内に含まれるデコーダ設定情報を表現します。
 /// H.264 ビデオストリームをデコードするために必要な SPS（Sequence Parameter Set）
 /// と PPS（Picture Parameter Set）を含みます。
+///
+/// # バイナリフォーマット
+///
+/// ```text
+/// 0          1          2          3          4
+/// +----------+----------+----------+----------+----------+
+/// | Version  | Profile  | Profile  | Level    | Length   |
+/// |          | Ind.     | Compat.  | Ind.     | Size     |
+/// +----------+----------+----------+----------+----------+
+///                                             |<-3 bits->|
+///
+/// 5          6          7          ...
+/// +----------+----------+----------+
+/// | SPS Cnt  | SPS Length (2 bytes) | SPS Data ...
+/// |<-5 bits->|
+/// +----------+
+/// ...
+/// +----------+----------+----------+
+/// | PPS Cnt  | PPS Length (2 bytes) | PPS Data ...
+/// +----------+
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AvcSequenceHeader {
     /// 設定バージョン（通常は 1）
@@ -214,31 +235,48 @@ pub struct AvcSequenceHeader {
     pub avc_level_indication: u8,
 
     /// NAL ユニット長フィールドのサイズ - 1（通常は 3、つまり 4 バイト）
+    /// 値域: 0-3
     pub length_size_minus_one: u8,
 
     /// Sequence Parameter Set（SPS）リスト
+    /// 最大31個（5ビット）
     pub sps_list: Vec<Vec<u8>>,
 
     /// Picture Parameter Set（PPS）リスト
+    /// 最大255個（8ビット）
     pub pps_list: Vec<Vec<u8>>,
 }
 
 impl AvcSequenceHeader {
+    /// SPS リストの最大数（FLV仕様）
+    const MAX_SPS_COUNT: usize = 31;
+
+    /// PPS リストの最大数（FLV仕様）
+    const MAX_PPS_COUNT: usize = 255;
+
     /// バイト列をパースして [`AvcSequenceHeader`] インスタンスを生成する
     ///
     /// 通常はこのバイト列は [`VideoFrame::avc_packet_type`] が [`AvcPacketType::SequenceHeader`] の場合に
     /// [`VideoFrame::data`] に格納されている値となる
+    ///
+    /// # エラー
+    ///
+    /// - データが短すぎる場合
+    /// - サポートされていないバージョンの場合
+    /// - SPS/PPS データが不完全な場合
     pub fn from_bytes(data: &[u8]) -> Result<Self, Error> {
+        // 最小バイト数: configVersion(1) + profile(1) + compat(1) + level(1) +
+        //              length_size(1) + numSPS(1) + numPPS(1) = 7 bytes
         if data.len() < 7 {
             return Err(Error::invalid_data(
-                "AVCDecoderConfigurationRecord too short",
+                "AVCDecoderConfigurationRecord too short (expected at least 7 bytes)",
             ));
         }
 
         let configuration_version = data[0];
         if configuration_version != 1 {
             return Err(Error::unsupported(format!(
-                "unsupported configuration version: {}",
+                "unsupported AVC configuration version: {} (expected 1)",
                 configuration_version
             )));
         }
@@ -246,6 +284,8 @@ impl AvcSequenceHeader {
         let avc_profile_indication = data[1];
         let profile_compatibility = data[2];
         let avc_level_indication = data[3];
+
+        // length_size_minus_one は下位 2 ビットのみ使用
         let length_size_minus_one = data[4] & 0x03;
 
         let mut offset = 5;
@@ -254,21 +294,40 @@ impl AvcSequenceHeader {
 
         // SPS ユニット群をパース
         if offset >= data.len() {
-            return Err(Error::invalid_data("incomplete SPS configuration"));
+            return Err(Error::invalid_data("incomplete SPS count field (offset 5)"));
         }
+
         let num_sps = (data[offset] & 0x1F) as usize;
+        if num_sps > Self::MAX_SPS_COUNT {
+            return Err(Error::invalid_data(format!(
+                "SPS count exceeds maximum ({} > {})",
+                num_sps,
+                Self::MAX_SPS_COUNT
+            )));
+        }
         offset += 1;
 
-        for _ in 0..num_sps {
+        for i in 0..num_sps {
             if offset + 2 > data.len() {
-                return Err(Error::invalid_data("incomplete SPS length field"));
+                return Err(Error::invalid_data(format!(
+                    "incomplete SPS length field at index {}: need 2 bytes, have {}",
+                    i,
+                    data.len() - offset
+                )));
             }
+
             let sps_length = u16::from_be_bytes([data[offset], data[offset + 1]]) as usize;
             offset += 2;
 
             if offset + sps_length > data.len() {
-                return Err(Error::invalid_data("incomplete SPS data"));
+                return Err(Error::invalid_data(format!(
+                    "incomplete SPS data at index {}: need {} bytes, have {}",
+                    i,
+                    sps_length,
+                    data.len() - offset
+                )));
             }
+
             sps_list.push(data[offset..offset + sps_length].to_vec());
             offset += sps_length;
         }
@@ -277,19 +336,38 @@ impl AvcSequenceHeader {
         if offset >= data.len() {
             return Err(Error::invalid_data("incomplete PPS count field"));
         }
+
         let num_pps = data[offset] as usize;
+        if num_pps > Self::MAX_PPS_COUNT {
+            return Err(Error::invalid_data(format!(
+                "PPS count exceeds maximum ({} > {})",
+                num_pps,
+                Self::MAX_PPS_COUNT
+            )));
+        }
         offset += 1;
 
-        for _ in 0..num_pps {
+        for i in 0..num_pps {
             if offset + 2 > data.len() {
-                return Err(Error::invalid_data("incomplete PPS length field"));
+                return Err(Error::invalid_data(format!(
+                    "incomplete PPS length field at index {}: need 2 bytes, have {}",
+                    i,
+                    data.len() - offset
+                )));
             }
+
             let pps_length = u16::from_be_bytes([data[offset], data[offset + 1]]) as usize;
             offset += 2;
 
             if offset + pps_length > data.len() {
-                return Err(Error::invalid_data("incomplete PPS data"));
+                return Err(Error::invalid_data(format!(
+                    "incomplete PPS data at index {}: need {} bytes, have {}",
+                    i,
+                    pps_length,
+                    data.len() - offset
+                )));
             }
+
             pps_list.push(data[offset..offset + pps_length].to_vec());
             offset += pps_length;
         }
@@ -306,29 +384,89 @@ impl AvcSequenceHeader {
     }
 
     /// [`AvcSequenceHeader`] インスタンスを対応するバイト列に変換する
-    pub fn to_bytes(&self) -> Vec<u8> {
+    ///
+    /// # エラー
+    ///
+    /// SPS が 31 個を超える、または PPS が 255 個を超える場合はエラーを返す
+    pub fn to_bytes(&self) -> Result<Vec<u8>, Error> {
+        // SPS/PPS 数の検証
+        if self.sps_list.len() > Self::MAX_SPS_COUNT {
+            return Err(Error::invalid_data(format!(
+                "too many SPS entries: {} (max {})",
+                self.sps_list.len(),
+                Self::MAX_SPS_COUNT
+            )));
+        }
+
+        if self.pps_list.len() > Self::MAX_PPS_COUNT {
+            return Err(Error::invalid_data(format!(
+                "too many PPS entries: {} (max {})",
+                self.pps_list.len(),
+                Self::MAX_PPS_COUNT
+            )));
+        }
+
         let mut result = Vec::new();
 
         result.push(self.configuration_version);
         result.push(self.avc_profile_indication);
         result.push(self.profile_compatibility);
         result.push(self.avc_level_indication);
-        result.push(0xFC | self.length_size_minus_one); // 上位 6 ビットは 1 で埋める
+
+        // length_size_minus_one: 下位 2 ビット、上位 6 ビットは 1 で埋める
+        result.push(0xFC | (self.length_size_minus_one & 0x03));
 
         // SPS 数と SPS リスト
-        result.push(0xE0 | (self.sps_list.len() as u8)); // 上位 3 ビットは 1 で埋める
+        // SPS 数: 5 ビット、上位 3 ビットは 1 で埋める
+        result.push(0xE0 | (self.sps_list.len() as u8));
         for sps in &self.sps_list {
             result.extend_from_slice(&(sps.len() as u16).to_be_bytes());
             result.extend_from_slice(sps);
         }
 
-        // PPS 数と PPS リスト
+        // PPS 数と PPS リスト（8 ビット全て使用）
         result.push(self.pps_list.len() as u8);
         for pps in &self.pps_list {
             result.extend_from_slice(&(pps.len() as u16).to_be_bytes());
             result.extend_from_slice(pps);
         }
 
-        result
+        Ok(result)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_avc_sequence_header_roundtrip() {
+        let header = AvcSequenceHeader {
+            configuration_version: 1,
+            avc_profile_indication: 0x42,
+            profile_compatibility: 0xC0,
+            avc_level_indication: 0x1F,
+            length_size_minus_one: 3,
+            sps_list: vec![vec![0x01, 0x02, 0x03]],
+            pps_list: vec![vec![0x04, 0x05]],
+        };
+
+        let bytes = header.to_bytes().expect("to_bytes failed");
+        let parsed = AvcSequenceHeader::from_bytes(&bytes).expect("from_bytes failed");
+
+        assert_eq!(header, parsed);
+    }
+
+    #[test]
+    fn test_avc_sequence_header_too_short() {
+        let short_data = vec![0x01, 0x02, 0x03];
+        assert!(AvcSequenceHeader::from_bytes(&short_data).is_err());
+    }
+
+    #[test]
+    fn test_avc_sequence_header_invalid_version() {
+        let data = vec![0x02, 0x42, 0xC0, 0x1F, 0xFC, 0xE0, 0x00];
+        let result = AvcSequenceHeader::from_bytes(&data);
+        assert!(result.is_err());
     }
 }
