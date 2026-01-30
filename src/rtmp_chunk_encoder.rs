@@ -540,6 +540,47 @@ mod tests {
         assert_eq!(encoded2, expected2);
     }
 
+    #[test]
+    fn encode_chunk_id_over_320_uses_little_endian() {
+        // チャンク ID 320 は (320 - 64) = 256 = 0x0100 としてエンコードされる
+        // リトルエンディアン: 0x00, 0x01
+        // ビッグエンディアン（間違い）: 0x01, 0x00
+        let chunk = RtmpChunk {
+            chunk_stream_id: RtmpChunkStreamId::new(320).expect("infallible"),
+            ..input_chunk()
+        };
+
+        let encoded = encode_chunks(RtmpChunkEncoder::default(), &[chunk]);
+
+        // 基本ヘッダーは以下のようになるべき:
+        // - fmt_flag | 1 = 0b0000_0001 (fmt=0, ID は 2 バイトエンコーディングを使用)
+        // - delta_id[0] = 0x00 (256 のリトルエンディアン下位バイト)
+        // - delta_id[1] = 0x01 (256 のリトルエンディアン上位バイト)
+        assert_eq!(encoded[0], 0x01);
+        assert_eq!(encoded[1], 0x00);
+        assert_eq!(encoded[2], 0x01);
+    }
+
+    #[test]
+    fn encode_chunk_id_65599_uses_little_endian() {
+        // チャンク ID 65599 は (65599 - 64) = 65535 = 0xFFFF としてエンコードされる
+        // リトルエンディアン: 0xFF, 0xFF
+        let chunk = RtmpChunk {
+            chunk_stream_id: RtmpChunkStreamId::new(65599).expect("infallible"),
+            ..input_chunk()
+        };
+
+        let encoded = encode_chunks(RtmpChunkEncoder::default(), &[chunk]);
+
+        // 基本ヘッダーは以下のようになるべき:
+        // - fmt_flag | 1 = 0b0000_0001 (fmt=0, ID は 2 バイトエンコーディングを使用)
+        // - delta_id[0] = 0xFF (65535 のリトルエンディアン下位バイト)
+        // - delta_id[1] = 0xFF (65535 のリトルエンディアン上位バイト)
+        assert_eq!(encoded[0], 0x01);
+        assert_eq!(encoded[1], 0xFF);
+        assert_eq!(encoded[2], 0xFF);
+    }
+
     fn input_chunk() -> RtmpChunk {
         RtmpChunk {
             chunk_stream_id: RtmpChunkStreamId::new(4).expect("infallible"),
