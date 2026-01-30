@@ -66,7 +66,9 @@ impl RtmpChunkEncoder {
         } else {
             assert!(id < 65600);
             buf.write_u8((fmt << 6) | 1);
-            buf.write_u16((id - 64) as u16);
+
+            // リトルエンディアンとして扱うために swap_bytes() を呼んでいる
+            buf.write_u16(((id - 64) as u16).swap_bytes());
         }
     }
 

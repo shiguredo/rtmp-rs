@@ -158,7 +158,8 @@ impl RtmpChunkDecoder {
         let chunk_stream_id = if id_bits == 0 {
             buf.read_u8()? as u32 + 64
         } else if id_bits == 1 {
-            buf.read_u16()? as u32 + 64
+            // リトルエンディアンとして扱うために swap_bytes() を呼んでいる
+            (buf.read_u16()?).swap_bytes() as u32 + 64
         } else {
             id_bits as u32
         };
@@ -553,6 +554,63 @@ mod tests {
             }
         }
 
+        assert_eq!(decoded, vec![chunk0, chunk1, chunk2, chunk3]);
+    }
+
+    #[test]
+    fn decode_chunk_id_over_320() {
+        let chunk0 = RtmpChunk {
+            chunk_stream_id: RtmpChunkStreamId::new(320).expect("infallible"),
+            ..input_chunk()
+        };
+        let chunk1 = RtmpChunk {
+            chunk_stream_id: RtmpChunkStreamId::new(320).expect("infallible"),
+            message_type: RtmpMessageType::CommandAmf0,
+            ..chunk0.clone()
+        };
+        let encoded = encode_chunks(&[chunk0.clone(), chunk1.clone()]);
+        let decoded = decode_chunks(&encoded);
+        assert_eq!(decoded, vec![chunk0, chunk1]);
+    }
+
+    #[test]
+    fn decode_chunk_id_65599() {
+        let chunk0 = RtmpChunk {
+            chunk_stream_id: RtmpChunkStreamId::new(65599).expect("infallible"),
+            ..input_chunk()
+        };
+        let chunk1 = RtmpChunk {
+            chunk_stream_id: RtmpChunkStreamId::new(65599).expect("infallible"),
+            message_type: RtmpMessageType::Video,
+            ..chunk0.clone()
+        };
+        let encoded = encode_chunks(&[chunk0.clone(), chunk1.clone()]);
+        let decoded = decode_chunks(&encoded);
+        assert_eq!(decoded, vec![chunk0, chunk1]);
+    }
+
+    #[test]
+    fn decode_multiple_chunk_stream_ids_with_large_ids() {
+        let chunk0 = input_chunk();
+        let chunk1 = RtmpChunk {
+            chunk_stream_id: RtmpChunkStreamId::new(320).expect("infallible"),
+            ..chunk0.clone()
+        };
+        let chunk2 = RtmpChunk {
+            chunk_stream_id: RtmpChunkStreamId::new(65599).expect("infallible"),
+            ..chunk0.clone()
+        };
+        let chunk3 = RtmpChunk {
+            chunk_stream_id: RtmpChunkStreamId::new(4).expect("infallible"),
+            ..chunk0.clone()
+        };
+        let encoded = encode_chunks(&[
+            chunk0.clone(),
+            chunk1.clone(),
+            chunk2.clone(),
+            chunk3.clone(),
+        ]);
+        let decoded = decode_chunks(&encoded);
         assert_eq!(decoded, vec![chunk0, chunk1, chunk2, chunk3]);
     }
 
