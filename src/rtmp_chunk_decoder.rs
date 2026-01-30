@@ -163,6 +163,10 @@ impl RtmpChunkDecoder {
         } else {
             id_bits as u32
         };
+
+        // RtmpChunkStreamId::new() が許可する範囲は 2..=65599 だけど、
+        // 上の if 分岐の条件的に chunk_stream_id の最小値は 2 で、かつ、
+        // 最大値は 0xFFFF + 64 = 65599 なので、以下の new() は常に成功する
         let chunk_stream_id = RtmpChunkStreamId::new(chunk_stream_id).expect("bug");
 
         Ok((format, chunk_stream_id))
