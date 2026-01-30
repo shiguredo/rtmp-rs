@@ -221,7 +221,6 @@ async fn run_publishing_loop(
     let mut recv_buf = vec![0u8; 8192];
     let start_time = Instant::now();
     let mut sample_count = 0;
-    let mut publishing = false;
     let mut last_mp4a_box: Option<shiguredo_mp4::boxes::Mp4aBox> = None;
 
     // イベント処理ループ
@@ -231,11 +230,6 @@ async fn run_publishing_loop(
             // イベントハンドリング
             if verbose {
                 dbg!(&event);
-            }
-            if let shiguredo_rtmp::RtmpConnectionEvent::StateChanged(s) = event
-                && s == shiguredo_rtmp::RtmpConnectionState::Publishing
-            {
-                publishing = true;
             }
         }
 
@@ -257,7 +251,7 @@ async fn run_publishing_loop(
             }
         }
 
-        if !publishing {
+        if connection.state() != shiguredo_rtmp::RtmpConnectionState::Publishing {
             continue;
         }
 
