@@ -234,6 +234,11 @@ impl RtmpMessageChannel {
         // ACK を送る必要があるなら送るように呼び出し元に指示する
         //
         // 念のために peer_ack_window_size の半分を超過したら送るようにする
+        //
+        // 仕様的には peer_ack_window_size 分だけ受信したら送れば十分そうだけど、
+        // RTMP は仕様が不明瞭なところがあり、クライアントが厳密にそれに準拠している保証もないため、
+        // 安全側に倒して、早めに送信するようにしている
+        // （この部分のオーバーヘッドもほぼ無視できる範囲のため）
         let unacked_bytes = self.total_bytes_received.wrapping_sub(self.last_ack_sent);
         if unacked_bytes > self.peer_ack_window_size / 2 {
             self.last_ack_sent = self.total_bytes_received;
