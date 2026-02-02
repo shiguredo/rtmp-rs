@@ -456,6 +456,17 @@ impl<'a> Encoder<'a> {
     }
 
     fn encode_integer(&mut self, i: i32) {
+        // i が 29 bit の範囲内に収まっているかどうかを assert! でチェックする
+        //
+        // [NOTE]
+        // AMF のエンコードは crate 内部のみで行われ、外部には公開されていないので、
+        // これを正しく呼ぶのは呼び出し側の責務として、ここでは条件に違反した場合は単純にパニックしている
+        assert!(
+            i >= -(1i32 << 28) && i < (1i32 << 28),
+            "integer must fit in 29-bit signed range, got: {}",
+            i
+        );
+
         self.buf.write_u8(MARKER_INTEGER);
         let u29 = if i >= 0 {
             i as u32
