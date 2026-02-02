@@ -462,7 +462,7 @@ impl<'a> Encoder<'a> {
         // AMF のエンコードは crate 内部のみで行われ、外部には公開されていないので、
         // これを正しく呼ぶのは呼び出し側の責務として、ここでは条件に違反した場合は単純にパニックしている
         assert!(
-            i >= -(1i32 << 28) && i < (1i32 << 28),
+            (-(1i32 << 28)..(1i32 << 28)).contains(&i),
             "integer must fit in 29-bit signed range, got: {}",
             i
         );
