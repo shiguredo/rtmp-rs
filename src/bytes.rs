@@ -255,6 +255,10 @@ impl Buf {
         }
     }
 
+    // [NOTE]
+    // 呼び出しが `Buf::get().len()` よりも大きい値を n に指定した場合には、
+    // 後続の処理でパニックなどをする可能性がある
+    // （`Buf` は内部的な構造体なので、このメソッドを正しく使うのは呼び出し元の責務として、ここではエラーチェックをしていない）
     pub fn advance(&mut self, n: usize) {
         self.offset += n;
         if self.offset == self.bytes.len() {
