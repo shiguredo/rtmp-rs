@@ -1,0 +1,35 @@
+fn main() {
+    let version = get_root_version();
+    println!("cargo::rustc-env=SHIGUREDO_RTMP_VERSION={version}");
+
+    cbindgen::Builder::new()
+        .with_crate(env!("CARGO_MANIFEST_DIR"))
+        .with_language(cbindgen::Language::C)
+        .with_cpp_compat(true)
+        .with_include_version(true)
+        .with_include_guard("SHIGUREDO_RTMP_H")
+        .with_no_includes()
+        .with_sys_include("stdbool.h")
+        .with_sys_include("stdint.h")
+        .generate()
+        .expect("failed to generate C bindings")
+        .write_to_file("include/rtmp.h");
+}
+
+fn get_root_version() -> String {
+    let root_cargo_toml = include_str!("../../Cargo.toml");
+    root_cargo_toml
+        .lines()
+        .find_map(|line| {
+            let trimmed = line.trim();
+            if trimmed.starts_with("version") {
+                trimmed
+                    .split_once('=')
+                    .map(|(_, value)| value.trim().trim_matches('"'))
+            } else {
+                None
+            }
+        })
+        .expect("version not found")
+        .to_owned()
+}

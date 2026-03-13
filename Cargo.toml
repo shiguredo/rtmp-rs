@@ -17,5 +17,21 @@ pbt = []
 [dependencies]
 
 [workspace]
-members = ["examples/publish", "examples/server", "pbt"]
+members = [
+    "crates/c-api",
+    "crates/wasm",
+    "examples/publish",
+    "examples/server",
+    "pbt",
+]
 exclude = ["fuzz"]
+
+# wasm リリース用のビルドプロファイル (サイズ最小化)
+# cargo build --profile release-wasm --package wasm --target wasm32-unknown-unknown
+[profile.release-wasm]
+inherits = "release"
+lto = true
+codegen-units = 1
+opt-level = "z"
+panic = "abort"
+strip = true

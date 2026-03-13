@@ -211,6 +211,49 @@ cargo run -p server -- --tls --cert cert.pem --key key.pem -p 443
 - `--key <PATH>`: 秘密鍵ファイル (PEM 形式)
 - `--verbose`: 詳細出力
 
+## C API
+
+`mp4-rs` と同様に `crates/c-api` クレートを追加し、C から扱える FFI を提供しています。
+
+```bash
+cargo build -p c-api
+```
+
+- ヘッダーファイル: `crates/c-api/include/rtmp.h`
+- 静的ライブラリ: `target/debug/librtmp.a`
+
+主な関数:
+
+- `rtmp_library_version`
+- `rtmp_publish_client_connection_*`
+- `rtmp_play_client_connection_*`
+- `rtmp_server_connection_*`
+- `rtmp_audio_frame_*`
+- `rtmp_video_frame_*`
+- `rtmp_connection_event_*`
+
+## WebAssembly API
+
+`crates/wasm` クレートを追加し、wasm 向けメモリ管理関数と JSON 変換関数を提供しています。
+
+```bash
+rustup target add wasm32-unknown-unknown
+cargo build -p wasm --target wasm32-unknown-unknown --profile release-wasm
+```
+
+- 出力ファイル: `target/wasm32-unknown-unknown/release-wasm/rtmp_wasm.wasm`
+- `c-api` の関数群に加えて、以下の wasm 専用関数を利用できます
+  - `rtmp_alloc`
+  - `rtmp_free`
+  - `rtmp_vec_ptr`
+  - `rtmp_vec_len`
+  - `rtmp_vec_free`
+  - `rtmp_audio_frame_from_json`
+  - `rtmp_audio_frame_to_json`
+  - `rtmp_video_frame_from_json`
+  - `rtmp_video_frame_to_json`
+  - `rtmp_connection_event_to_json`
+
 ## ライセンス
 
 Apache License 2.0
