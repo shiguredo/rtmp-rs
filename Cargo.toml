@@ -17,5 +17,5 @@ pbt = []
 [dependencies]
 
 [workspace]
-members = ["examples/publish", "examples/server", "pbt"]
+members = ["crates/c-api", "examples/publish", "examples/server", "pbt"]
 exclude = ["fuzz"]
