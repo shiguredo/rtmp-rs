@@ -1,5 +1,8 @@
 target/
 
+# cbindgen で自動生成されるヘッダー
+crates/c-api/include/
+
 # Agents
 .claude/
 .codex/
