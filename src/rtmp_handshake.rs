@@ -1,3 +1,6 @@
+use alloc::vec::Vec;
+use core::mem;
+
 use crate::bytes::{BytesReader, BytesWriter};
 use crate::error::Error;
 
@@ -137,7 +140,7 @@ impl RtmpServerHandshake {
     }
 
     pub fn take_recv_buf(&mut self) -> Vec<u8> {
-        std::mem::take(&mut self.recv_buf)
+        mem::take(&mut self.recv_buf)
     }
 
     pub fn send_buf(&self) -> &[u8] {
@@ -237,7 +240,7 @@ impl RtmpClientHandshake {
     }
 
     pub fn take_recv_buf(&mut self) -> Vec<u8> {
-        std::mem::take(&mut self.recv_buf)
+        mem::take(&mut self.recv_buf)
     }
 
     pub fn send_buf(&self) -> &[u8] {

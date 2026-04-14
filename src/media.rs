@@ -1,3 +1,5 @@
+use alloc::vec::Vec;
+
 use crate::Error;
 use crate::rtmp_timestamp::{RtmpTimestamp, RtmpTimestampDelta};
 

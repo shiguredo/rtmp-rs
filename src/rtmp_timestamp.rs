@@ -1,4 +1,4 @@
-use std::time::Duration;
+use core::time::Duration;
 
 /// RTMP のタイムスタンプを表す構造体
 ///

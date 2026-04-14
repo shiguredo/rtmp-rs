@@ -1,4 +1,6 @@
-use std::collections::HashMap;
+use alloc::collections::BTreeMap;
+use alloc::vec::Vec;
+use core::mem;
 
 use crate::bytes::BytesReader;
 use crate::error::Error;
@@ -9,7 +11,7 @@ use crate::rtmp_timestamp::RtmpTimestamp;
 #[derive(Debug, Default)]
 pub struct RtmpChunkDecoder {
     chunk_size: RtmpChunkSize,
-    chunk_streams: HashMap<RtmpChunkStreamId, RtmpChunkStream>,
+    chunk_streams: BTreeMap<RtmpChunkStreamId, RtmpChunkStream>,
 }
 
 impl RtmpChunkDecoder {
@@ -73,7 +75,7 @@ impl RtmpChunkDecoder {
             chunk_stream.timestamp = chunk_stream
                 .timestamp
                 .wrapping_add(chunk_stream.timestamp_delta);
-            let complete_payload = std::mem::take(&mut chunk_stream.acc_payload);
+            let complete_payload = mem::take(&mut chunk_stream.acc_payload);
             Ok(Some(complete_payload))
         } else {
             Ok(None)

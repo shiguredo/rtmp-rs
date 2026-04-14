@@ -1,5 +1,9 @@
 //! RTMP (Real Time Messaging Protocol) の Sans I/O 実装を提供するライブラリ
+// `no_std` + `alloc`。`cargo test -p shiguredo_rtmp` のときだけ `cfg(test)` で `std` を使う（単体テスト用）
+#![cfg_attr(not(test), no_std)]
 #![cfg_attr(not(feature = "pbt"), warn(missing_docs))]
+#[macro_use]
+extern crate alloc;
 mod amf;
 mod amf0;
 mod amf3;

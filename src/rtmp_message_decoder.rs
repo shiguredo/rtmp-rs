@@ -1,3 +1,6 @@
+use alloc::borrow::ToOwned;
+use alloc::vec::Vec;
+
 use crate::amf::{AmfValue, AmfVersion};
 use crate::bytes::{Buf, BytesReader};
 use crate::error::{Error, ErrorKind};

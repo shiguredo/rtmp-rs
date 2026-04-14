@@ -1,4 +1,6 @@
-use std::time::Duration;
+use alloc::string::String;
+use alloc::vec::Vec;
+use core::time::Duration;
 
 use crate::amf::Pair;
 use crate::amf3::Amf3Value;

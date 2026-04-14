@@ -1,4 +1,5 @@
-use std::collections::HashMap;
+use alloc::collections::BTreeMap;
+use alloc::vec::Vec;
 
 use crate::bytes::BytesWriter;
 use crate::rtmp_chunk::{MessageHeaderFormat, RtmpChunk, RtmpChunkSize, RtmpChunkStreamId};
@@ -8,7 +9,7 @@ use crate::rtmp_timestamp::RtmpTimestamp;
 #[derive(Debug, Default)]
 pub struct RtmpChunkEncoder {
     chunk_size: RtmpChunkSize,
-    chunk_streams: HashMap<RtmpChunkStreamId, RtmpChunkStream>,
+    chunk_streams: BTreeMap<RtmpChunkStreamId, RtmpChunkStream>,
 }
 
 impl RtmpChunkEncoder {

@@ -1,3 +1,5 @@
+use alloc::vec::Vec;
+
 use crate::bytes::BytesReader;
 use crate::error::Error;
 use crate::rtmp_message::RtmpMessageStreamId;

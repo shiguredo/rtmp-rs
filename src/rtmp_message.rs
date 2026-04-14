@@ -1,3 +1,6 @@
+use alloc::string::String;
+use alloc::vec::Vec;
+
 use crate::amf::{AmfValue, AmfVersion};
 use crate::error::Error;
 use crate::media::{AudioFrame, VideoFrame};
@@ -222,6 +225,8 @@ pub enum SetPeerBandwidthLimitType {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use alloc::string::ToString;
 
     use crate::amf::Pair;
     use crate::amf0::Amf0Value;

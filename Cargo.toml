@@ -11,6 +11,7 @@ repository = "https://github.com/shiguredo/rtmp-rs"
 readme = "README.md"
 
 [features]
+default = []
 # これを有効にすると PBT / fuzzing で必要な構造体などが外部に公開されるようになる
 pbt = []
 

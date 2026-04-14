@@ -1,4 +1,5 @@
-use std::collections::VecDeque;
+use alloc::borrow::ToOwned;
+use alloc::collections::VecDeque;
 
 use crate::error::Error;
 use crate::media::{AudioFrame, VideoFrame};

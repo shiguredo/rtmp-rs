@@ -1,4 +1,6 @@
-use std::collections::VecDeque;
+use alloc::borrow::ToOwned;
+use alloc::collections::VecDeque;
+use alloc::string::{String, ToString};
 
 use crate::error::Error;
 use crate::media::{AudioFrame, VideoFrame};

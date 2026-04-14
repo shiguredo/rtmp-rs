@@ -1,3 +1,6 @@
+use alloc::borrow::ToOwned;
+use alloc::vec::Vec;
+
 use crate::amf0::Amf0Value;
 use crate::amf3::Amf3Value;
 use crate::error::Error;
