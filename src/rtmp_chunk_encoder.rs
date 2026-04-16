@@ -348,7 +348,7 @@ mod tests {
             ..input_chunk()
         };
         let chunk1 = RtmpChunk {
-            timestamp: RtmpTimestamp::from_millis((timestamp.wrapping_add(timestamp)) as u32),
+            timestamp: RtmpTimestamp::from_millis(timestamp.wrapping_add(timestamp)),
             ..chunk0.clone()
         };
         let expected = [
@@ -369,7 +369,7 @@ mod tests {
             ..input_chunk()
         };
         let chunk0_1 = RtmpChunk {
-            timestamp: RtmpTimestamp::from_millis((timestamp0.wrapping_add(timestamp0)) as u32),
+            timestamp: RtmpTimestamp::from_millis(timestamp0.wrapping_add(timestamp0)),
             ..chunk0_0.clone()
         };
         let expected0 = [
@@ -387,7 +387,7 @@ mod tests {
             ..input_chunk()
         };
         let chunk1_1 = RtmpChunk {
-            timestamp: RtmpTimestamp::from_millis((timestamp1.wrapping_add(timestamp1)) as u32),
+            timestamp: RtmpTimestamp::from_millis(timestamp1.wrapping_add(timestamp1)),
             ..chunk1_0.clone()
         };
         let expected1 = [fmt_0(4, timestamp1, 3, 2, b"abc"), fmt_3(4, b"abc")].concat();
@@ -401,7 +401,7 @@ mod tests {
             ..input_chunk()
         };
         let chunk2_1 = RtmpChunk {
-            timestamp: RtmpTimestamp::from_millis((timestamp2.wrapping_add(timestamp2)) as u32),
+            timestamp: RtmpTimestamp::from_millis(timestamp2.wrapping_add(timestamp2)),
             ..chunk2_0.clone()
         };
         let expected2 = [
@@ -425,15 +425,15 @@ mod tests {
         let chunk1 = RtmpChunk {
             message_type: RtmpMessageType::Video,
             timestamp: RtmpTimestamp::from_millis(
-                (timestamp_base.wrapping_add(timestamp_delta)) as u32,
+                timestamp_base.wrapping_add(timestamp_delta),
             ),
             ..chunk0.clone()
         };
         let chunk2 = RtmpChunk {
             timestamp: RtmpTimestamp::from_millis(
-                (timestamp_base
+                timestamp_base
                     .wrapping_add(timestamp_delta)
-                    .wrapping_add(timestamp_delta)) as u32,
+                    .wrapping_add(timestamp_delta),
             ),
             ..chunk1.clone()
         };
@@ -461,15 +461,15 @@ mod tests {
         let chunk0_1 = RtmpChunk {
             message_type: RtmpMessageType::Video,
             timestamp: RtmpTimestamp::from_millis(
-                (timestamp_base.wrapping_add(timestamp_delta0)) as u32,
+                timestamp_base.wrapping_add(timestamp_delta0),
             ),
             ..chunk0_0.clone()
         };
         let chunk0_2 = RtmpChunk {
             timestamp: RtmpTimestamp::from_millis(
-                (timestamp_base
+                timestamp_base
                     .wrapping_add(timestamp_delta0)
-                    .wrapping_add(timestamp_delta0)) as u32,
+                    .wrapping_add(timestamp_delta0),
             ),
             ..chunk0_1.clone()
         };
@@ -491,15 +491,15 @@ mod tests {
         let chunk1_1 = RtmpChunk {
             message_type: RtmpMessageType::Video,
             timestamp: RtmpTimestamp::from_millis(
-                (timestamp_base.wrapping_add(timestamp_delta1)) as u32,
+                timestamp_base.wrapping_add(timestamp_delta1),
             ),
             ..chunk1_0.clone()
         };
         let chunk1_2 = RtmpChunk {
             timestamp: RtmpTimestamp::from_millis(
-                (timestamp_base
+                timestamp_base
                     .wrapping_add(timestamp_delta1)
-                    .wrapping_add(timestamp_delta1)) as u32,
+                    .wrapping_add(timestamp_delta1),
             ),
             ..chunk1_1.clone()
         };
@@ -521,15 +521,15 @@ mod tests {
         let chunk2_1 = RtmpChunk {
             message_type: RtmpMessageType::Video,
             timestamp: RtmpTimestamp::from_millis(
-                (timestamp_base.wrapping_add(timestamp_delta2)) as u32,
+                timestamp_base.wrapping_add(timestamp_delta2),
             ),
             ..chunk2_0.clone()
         };
         let chunk2_2 = RtmpChunk {
             timestamp: RtmpTimestamp::from_millis(
-                (timestamp_base
+                timestamp_base
                     .wrapping_add(timestamp_delta2)
-                    .wrapping_add(timestamp_delta2)) as u32,
+                    .wrapping_add(timestamp_delta2),
             ),
             ..chunk2_1.clone()
         };

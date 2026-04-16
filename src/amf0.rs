@@ -1,3 +1,6 @@
+// AMF0 の詳細は仕様書を参照（このモジュールは `missing_docs` を抑制する）
+#![allow(missing_docs)]
+
 use alloc::string::String;
 use alloc::vec::Vec;
 use core::time::Duration;

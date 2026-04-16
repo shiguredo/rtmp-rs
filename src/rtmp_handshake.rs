@@ -161,6 +161,12 @@ impl RtmpServerHandshake {
     }
 }
 
+impl Default for RtmpServerHandshake {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[derive(Debug)]
 pub struct RtmpClientHandshake {
     options: RtmpHandshakeOptions,
@@ -258,5 +264,11 @@ impl RtmpClientHandshake {
 
     pub fn is_send_complete(&self) -> bool {
         self.phase == Phase::Complete && self.send_buf.is_empty()
+    }
+}
+
+impl Default for RtmpClientHandshake {
+    fn default() -> Self {
+        Self::new()
     }
 }

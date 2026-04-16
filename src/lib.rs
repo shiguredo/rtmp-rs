@@ -1,6 +1,5 @@
 //! RTMP (Real Time Messaging Protocol) の Sans I/O 実装を提供するライブラリ
-// `no_std` + `alloc`。`cargo test -p shiguredo_rtmp` のときだけ `cfg(test)` で `std` を使う（単体テスト用）
-#![cfg_attr(not(test), no_std)]
+#![no_std]
 #![cfg_attr(not(feature = "pbt"), warn(missing_docs))]
 #[macro_use]
 extern crate alloc;
@@ -36,6 +35,14 @@ pub use rtmp_connection::{RtmpConnectionEvent, RtmpConnectionState};
 pub use rtmp_server_connection::RtmpServerConnection;
 pub use rtmp_timestamp::{RtmpTimestamp, RtmpTimestampDelta};
 pub use rtmp_url::RtmpUrl;
+
+// 統合テスト `tests/test_amf.rs` 用の再エクスポート（ドキュメント上は非公開扱い）
+#[doc(hidden)]
+pub use crate::amf0::Amf0Value;
+#[doc(hidden)]
+pub use crate::amf3::Amf3Value;
+#[doc(hidden)]
+pub use crate::amf::{AmfValue, AmfVersion};
 
 // PBT / Fuzzing 用に条件付きで公開しているモジュール
 #[cfg(feature = "pbt")]
