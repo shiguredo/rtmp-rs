@@ -3,19 +3,19 @@ name = "shiguredo_rtmp"
 version = "2026.1.0-canary.5"
 edition = "2024"
 rust-version = "1.88"
-authors = ["Shiguredo Inc."]
-license = "Apache-2.0"
 description = "RTMP library"
+readme = "README.md"
 homepage = "https://github.com/shiguredo/rtmp-rs"
 repository = "https://github.com/shiguredo/rtmp-rs"
-readme = "README.md"
-
-[features]
-# これを有効にすると PBT / fuzzing で必要な構造体などが外部に公開されるようになる
-pbt = []
-
-[dependencies]
+license = "Apache-2.0"
+include = ["/LICENSE", "/README.md", "/src/**"]
 
 [workspace]
 members = ["examples/publish", "examples/server", "pbt"]
 exclude = ["fuzz"]
+
+[dependencies]
+
+[features]
+# これを有効にすると PBT / fuzzing で必要な構造体などが外部に公開されるようになる
+pbt = []
