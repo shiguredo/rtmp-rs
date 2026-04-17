@@ -38,11 +38,11 @@ pub use rtmp_url::RtmpUrl;
 
 // 統合テスト `tests/test_amf.rs` 用の再エクスポート（ドキュメント上は非公開扱い）
 #[doc(hidden)]
+pub use crate::amf::{AmfValue, AmfVersion};
+#[doc(hidden)]
 pub use crate::amf0::Amf0Value;
 #[doc(hidden)]
 pub use crate::amf3::Amf3Value;
-#[doc(hidden)]
-pub use crate::amf::{AmfValue, AmfVersion};
 
 // PBT / Fuzzing 用に条件付きで公開しているモジュール
 #[cfg(feature = "pbt")]

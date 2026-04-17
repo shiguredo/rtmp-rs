@@ -424,9 +424,7 @@ mod tests {
         };
         let chunk1 = RtmpChunk {
             message_type: RtmpMessageType::Video,
-            timestamp: RtmpTimestamp::from_millis(
-                timestamp_base.wrapping_add(timestamp_delta),
-            ),
+            timestamp: RtmpTimestamp::from_millis(timestamp_base.wrapping_add(timestamp_delta)),
             ..chunk0.clone()
         };
         let chunk2 = RtmpChunk {
@@ -460,9 +458,7 @@ mod tests {
         };
         let chunk0_1 = RtmpChunk {
             message_type: RtmpMessageType::Video,
-            timestamp: RtmpTimestamp::from_millis(
-                timestamp_base.wrapping_add(timestamp_delta0),
-            ),
+            timestamp: RtmpTimestamp::from_millis(timestamp_base.wrapping_add(timestamp_delta0)),
             ..chunk0_0.clone()
         };
         let chunk0_2 = RtmpChunk {
@@ -490,9 +486,7 @@ mod tests {
         };
         let chunk1_1 = RtmpChunk {
             message_type: RtmpMessageType::Video,
-            timestamp: RtmpTimestamp::from_millis(
-                timestamp_base.wrapping_add(timestamp_delta1),
-            ),
+            timestamp: RtmpTimestamp::from_millis(timestamp_base.wrapping_add(timestamp_delta1)),
             ..chunk1_0.clone()
         };
         let chunk1_2 = RtmpChunk {
@@ -520,9 +514,7 @@ mod tests {
         };
         let chunk2_1 = RtmpChunk {
             message_type: RtmpMessageType::Video,
-            timestamp: RtmpTimestamp::from_millis(
-                timestamp_base.wrapping_add(timestamp_delta2),
-            ),
+            timestamp: RtmpTimestamp::from_millis(timestamp_base.wrapping_add(timestamp_delta2)),
             ..chunk2_0.clone()
         };
         let chunk2_2 = RtmpChunk {

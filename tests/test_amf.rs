@@ -27,17 +27,20 @@ fn decode_and_encode_amf0_values() {
 
         // 異常系のテストデータは特別扱いする
         if test_file_name.ends_with("-partial.bin") {
-            let err = AmfValue::decode(&original_data, version).expect_err("AmfValue::decode() success");
+            let err =
+                AmfValue::decode(&original_data, version).expect_err("AmfValue::decode() success");
             assert_eq!(err.kind, ErrorKind::InsufficientBuffer);
             continue;
         }
         if test_file_name.contains("-bad-") {
-            let err = AmfValue::decode(&original_data, version).expect_err("AmfValue::decode() success");
+            let err =
+                AmfValue::decode(&original_data, version).expect_err("AmfValue::decode() success");
             assert_eq!(err.kind, ErrorKind::InvalidData);
             continue;
         }
         if test_file_name.contains("-unsupported-") {
-            let err = AmfValue::decode(&original_data, version).expect_err("AmfValue::decode() success");
+            let err =
+                AmfValue::decode(&original_data, version).expect_err("AmfValue::decode() success");
             assert_eq!(err.kind, ErrorKind::Unsupported);
             continue;
         }
@@ -93,17 +96,20 @@ fn decode_and_encode_amf3_values() {
 
         // 異常系のテストデータは特別扱いする
         if test_file_name.ends_with("-partial.bin") {
-            let err = AmfValue::decode(&original_data, version).expect_err("AmfValue::decode() success");
+            let err =
+                AmfValue::decode(&original_data, version).expect_err("AmfValue::decode() success");
             assert_eq!(err.kind, ErrorKind::InsufficientBuffer);
             continue;
         }
         if test_file_name.contains("-bad-") {
-            let err = AmfValue::decode(&original_data, version).expect_err("AmfValue::decode() success");
+            let err =
+                AmfValue::decode(&original_data, version).expect_err("AmfValue::decode() success");
             assert_eq!(err.kind, ErrorKind::InvalidData);
             continue;
         }
         if test_file_name.contains("-unsupported-") {
-            let err = AmfValue::decode(&original_data, version).expect_err("AmfValue::decode() success");
+            let err =
+                AmfValue::decode(&original_data, version).expect_err("AmfValue::decode() success");
             assert_eq!(err.kind, ErrorKind::Unsupported);
             continue;
         }
