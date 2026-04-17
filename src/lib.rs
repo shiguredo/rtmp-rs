@@ -41,14 +41,6 @@ pub use rtmp_server_connection::RtmpServerConnection;
 pub use rtmp_timestamp::{RtmpTimestamp, RtmpTimestampDelta};
 pub use rtmp_url::RtmpUrl;
 
-// 統合テスト `tests/test_amf.rs` 用の再エクスポート（ドキュメント上は非公開扱い）
-#[doc(hidden)]
-pub use crate::amf::{AmfValue, AmfVersion};
-#[doc(hidden)]
-pub use crate::amf0::Amf0Value;
-#[doc(hidden)]
-pub use crate::amf3::Amf3Value;
-
 // PBT / Fuzzing から内部アイテムを参照するために用意した再エクスポート用モジュール。
 // クレート外の通常利用からは見せたくないので `#[doc(hidden)]` でドキュメントから除外し、
 // さらにドキュメント生成時 (`cfg(doc)`) には丸ごと除外して公開 API 以外を rustdoc に露出させない。

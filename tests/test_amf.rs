@@ -1,6 +1,7 @@
 //! AMF のゴールデンファイル検証（`std::fs` は統合テスト側に置き、`src/` は `core` / `alloc` のみとする）
 
-use shiguredo_rtmp::{Amf0Value, AmfValue, AmfVersion, ErrorKind};
+use shiguredo_rtmp::ErrorKind;
+use shiguredo_rtmp::tests::{Amf0Value, AmfValue, AmfVersion};
 
 #[test]
 fn decode_and_encode_amf0_values() {
