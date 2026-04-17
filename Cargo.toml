@@ -15,7 +15,3 @@ members = ["examples/publish", "examples/server", "pbt"]
 exclude = ["fuzz"]
 
 [dependencies]
-
-[features]
-# これを有効にすると PBT / fuzzing で必要な構造体などが外部に公開されるようになる
-pbt = []

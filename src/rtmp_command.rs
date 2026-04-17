@@ -48,10 +48,9 @@ pub enum RtmpCommand {
     Ignore {
         name: String,
 
-        // 以降のフィールドはデバッグ表示用なので、コード本体では参照されない
-        #[cfg_attr(not(feature = "pbt"), expect(dead_code))]
+        // 以降のフィールドはデバッグ表示用で、クレート内のコードからは参照されない
+        // （`tests` モジュール経由で PBT / fuzzing から参照されるため dead_code にはならない）
         object: AmfValue,
-        #[cfg_attr(not(feature = "pbt"), expect(dead_code))]
         args: Vec<AmfValue>,
     },
 }
