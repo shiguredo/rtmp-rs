@@ -1,3 +1,5 @@
+use alloc::vec::Vec;
+
 use crate::amf::{AmfValue, AmfVersion};
 use crate::bytes::BytesWriter;
 use crate::rtmp_chunk::{RtmpChunk, RtmpChunkStreamId};

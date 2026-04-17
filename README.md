@@ -158,7 +158,7 @@ connection.advance_send_buf(send_data.len());
 
 | 型 | 説明 |
 |--------|------|
-| `Error` | エラー型 (kind, reason, location, backtrace を含む) |
+| `Error` | エラー型 (kind, reason, location を含む) |
 | `ErrorKind` | エラー種別 (InvalidInput, InvalidData, InvalidState, Unsupported) |
 
 ## サンプル

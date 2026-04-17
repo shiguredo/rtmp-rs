@@ -1,3 +1,5 @@
+use alloc::vec::Vec;
+
 use crate::bytes::{BytesReader, BytesWriter};
 use crate::rtmp_timestamp::{RtmpTimestamp, RtmpTimestampDelta};
 use crate::{

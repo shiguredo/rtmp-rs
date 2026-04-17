@@ -1,3 +1,5 @@
+use alloc::vec::Vec;
+
 use crate::rtmp_message::{RtmpMessageStreamId, RtmpMessageType};
 use crate::rtmp_timestamp::RtmpTimestamp;
 

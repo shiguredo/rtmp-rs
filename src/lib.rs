@@ -1,5 +1,13 @@
 //! RTMP (Real Time Messaging Protocol) の Sans I/O 実装を提供するライブラリ
-#![cfg_attr(not(feature = "pbt"), warn(missing_docs))]
+#![no_std]
+// `missing_docs` の警告は公開 API のみに効かせたい。
+// 下部の `tests` モジュールは PBT / Fuzzing 用に内部アイテムを大量に再エクスポートするので
+// 通常ビルドで `warn(missing_docs)` を全体に効かせると内部 API まで警告対象になってしまう。
+// そのためドキュメント生成時 (`cfg(doc)`) に限定して警告を有効化する。
+// 併せて `tests` モジュール自体を `cfg(not(doc))` で除外し、公開 API だけをチェック対象にする。
+#![cfg_attr(doc, warn(missing_docs))]
+#[macro_use]
+extern crate alloc;
 mod amf;
 mod amf0;
 mod amf3;
@@ -33,8 +41,11 @@ pub use rtmp_server_connection::RtmpServerConnection;
 pub use rtmp_timestamp::{RtmpTimestamp, RtmpTimestampDelta};
 pub use rtmp_url::RtmpUrl;
 
-// PBT / Fuzzing 用に条件付きで公開しているモジュール
-#[cfg(feature = "pbt")]
+// PBT / Fuzzing から内部アイテムを参照するために用意した再エクスポート用モジュール。
+// クレート外の通常利用からは見せたくないので `#[doc(hidden)]` でドキュメントから除外し、
+// さらにドキュメント生成時 (`cfg(doc)`) には丸ごと除外して公開 API 以外を rustdoc に露出させない。
+#[cfg(not(doc))]
+#[doc(hidden)]
 pub mod tests {
     pub use crate::amf::*;
     pub use crate::amf0::*;

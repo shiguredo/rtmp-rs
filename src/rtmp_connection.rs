@@ -1,4 +1,7 @@
-use std::collections::VecDeque;
+use alloc::borrow::ToOwned;
+use alloc::collections::VecDeque;
+use alloc::string::String;
+use core::fmt;
 
 use crate::bytes::Buf;
 use crate::error::Error;
@@ -184,8 +187,8 @@ impl RtmpConnectionState {
     }
 }
 
-impl std::fmt::Display for RtmpConnectionState {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Display for RtmpConnectionState {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             RtmpConnectionState::Handshaking => write!(f, "HANDSHAKING"),
             RtmpConnectionState::Connecting => write!(f, "CONNECTING"),
@@ -294,6 +297,8 @@ impl RtmpMessageChannel {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use alloc::vec::Vec;
 
     use crate::media::{
         AudioFormat, AudioFrame, AudioSampleRate, VideoCodec, VideoFrame, VideoFrameType,

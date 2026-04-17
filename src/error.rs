@@ -1,5 +1,6 @@
-use std::backtrace::{Backtrace, BacktraceStatus};
-use std::panic::Location;
+use alloc::string::String;
+use core::fmt;
+use core::panic::Location;
 
 /// エラーの種類
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -32,11 +33,6 @@ pub struct Error {
 
     /// エラーが作成されたソースコードの場所
     pub location: &'static Location<'static>,
-
-    /// エラー発生箇所を示すバックトレース
-    ///
-    /// バックトレースは `RUST_BACKTRACE` 環境変数が設定されていない場合には取得されない
-    pub backtrace: Backtrace,
 }
 
 impl Error {
@@ -53,7 +49,6 @@ impl Error {
             kind,
             reason: reason.into(),
             location: Location::caller(),
-            backtrace: Backtrace::capture(),
         }
     }
 
@@ -92,21 +87,18 @@ impl Error {
     }
 }
 
-impl std::fmt::Debug for Error {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Debug for Error {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{self}")
     }
 }
 
-impl std::fmt::Display for Error {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Display for Error {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{:?}: {}", self.kind, self.reason)?;
         write!(f, " (at {}:{})", self.location.file(), self.location.line())?;
-        if self.backtrace.status() == BacktraceStatus::Captured {
-            write!(f, "\n\nBacktrace:\n{}", self.backtrace)?;
-        }
         Ok(())
     }
 }
 
-impl std::error::Error for Error {}
+impl core::error::Error for Error {}

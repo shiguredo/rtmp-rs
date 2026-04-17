@@ -1,3 +1,8 @@
+use alloc::borrow::ToOwned;
+use alloc::string::{String, ToString};
+use alloc::vec::Vec;
+use core::iter;
+
 use crate::amf::{AmfValue, AmfVersion};
 use crate::amf0::Amf0Value;
 use crate::error::Error;
@@ -17,7 +22,8 @@ impl TransactionId {
     pub const NON_RESERVED_START: Self = Self(2);
 
     pub fn from_f64(id: f64) -> Self {
-        Self(id.round() as i64)
+        // `no_std` では `f64::round` が使えない。RTMP では実質整数のみのため切り捨てでよい
+        Self(id as i64)
     }
 
     pub const fn get(self) -> i64 {
@@ -42,10 +48,9 @@ pub enum RtmpCommand {
     Ignore {
         name: String,
 
-        // 以降のフィールドはデバッグ表示用なので、コード本体では参照されない
-        #[cfg_attr(not(feature = "pbt"), expect(dead_code))]
+        // 以降のフィールドはデバッグ表示用で、クレート内のコードからは参照されない
+        // （`tests` モジュール経由で PBT / fuzzing から参照されるため dead_code にはならない）
         object: AmfValue,
-        #[cfg_attr(not(feature = "pbt"), expect(dead_code))]
         args: Vec<AmfValue>,
     },
 }
@@ -335,7 +340,7 @@ impl RtmpPublishCommand {
         transaction_id: TransactionId,
         stream_id: RtmpMessageStreamId,
     ) -> Result<RtmpMessage, Error> {
-        let properties = AmfValue::amf0_object(std::iter::empty());
+        let properties = AmfValue::amf0_object(iter::empty());
         let information = AmfValue::amf0_object([
             ("level", Amf0Value::String("status".to_string())),
             (
@@ -392,7 +397,7 @@ impl RtmpPlayCommand {
         transaction_id: TransactionId,
         stream_id: RtmpMessageStreamId,
     ) -> Result<RtmpMessage, Error> {
-        let properties = AmfValue::amf0_object(std::iter::empty());
+        let properties = AmfValue::amf0_object(iter::empty());
         let information = AmfValue::amf0_object([
             ("level", Amf0Value::String("status".to_string())),
             (
@@ -434,7 +439,7 @@ impl RtmpDeleteStreamCommand {
             .expect_number()?;
         Ok(Self {
             transaction_id,
-            stream_id: RtmpMessageStreamId::new(stream_id.round() as u32),
+            stream_id: RtmpMessageStreamId::new(stream_id as u32),
         })
     }
 }

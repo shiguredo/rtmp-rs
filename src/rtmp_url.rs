@@ -1,10 +1,15 @@
+use alloc::borrow::ToOwned;
+use alloc::string::String;
+use core::fmt;
+use core::str::FromStr;
+
 use crate::Error;
 
 /// RTMP 用の URL
 ///
 /// # NOTE
 ///
-/// [`std::str::FromStr`] の実装では [`RtmpUrl::parse()`] が使用されます。
+/// [`core::str::FromStr`] の実装では [`RtmpUrl::parse()`] が使用されます。
 /// もしストリーム名を URL 文字列とは別に指定したい場合には [`RtmpUrl::parse_with_stream_name()`] を使用してください。
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct RtmpUrl {
@@ -109,8 +114,8 @@ impl RtmpUrl {
     }
 }
 
-impl std::fmt::Display for RtmpUrl {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Display for RtmpUrl {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let scheme = if self.tls { "rtmps" } else { "rtmp" };
         write!(
             f,
@@ -120,7 +125,7 @@ impl std::fmt::Display for RtmpUrl {
     }
 }
 
-impl std::str::FromStr for RtmpUrl {
+impl FromStr for RtmpUrl {
     type Err = Error;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
@@ -192,7 +197,8 @@ fn parse_host_port(host_port: &str, tls: bool) -> Result<(&str, u16), Error> {
 mod tests {
     use super::*;
 
-    use std::str::FromStr;
+    use alloc::string::ToString;
+    use core::str::FromStr;
 
     #[test]
     fn test_basic_rtmp_url() {

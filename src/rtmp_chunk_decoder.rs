@@ -1,4 +1,6 @@
-use std::collections::HashMap;
+use alloc::collections::BTreeMap;
+use alloc::vec::Vec;
+use core::mem;
 
 use crate::bytes::BytesReader;
 use crate::error::Error;
@@ -9,7 +11,7 @@ use crate::rtmp_timestamp::RtmpTimestamp;
 #[derive(Debug, Default)]
 pub struct RtmpChunkDecoder {
     chunk_size: RtmpChunkSize,
-    chunk_streams: HashMap<RtmpChunkStreamId, RtmpChunkStream>,
+    chunk_streams: BTreeMap<RtmpChunkStreamId, RtmpChunkStream>,
 }
 
 impl RtmpChunkDecoder {
@@ -73,7 +75,7 @@ impl RtmpChunkDecoder {
             chunk_stream.timestamp = chunk_stream
                 .timestamp
                 .wrapping_add(chunk_stream.timestamp_delta);
-            let complete_payload = std::mem::take(&mut chunk_stream.acc_payload);
+            let complete_payload = mem::take(&mut chunk_stream.acc_payload);
             Ok(Some(complete_payload))
         } else {
             Ok(None)
@@ -208,7 +210,7 @@ mod tests {
     #[test]
     fn decode_basic_chunk() {
         let input_chunk = input_chunk();
-        let encoded = encode_chunks(&[input_chunk.clone()]);
+        let encoded = encode_chunks(core::slice::from_ref(&input_chunk));
         let decoded = decode_chunks(&encoded);
         assert_eq!(decoded, vec![input_chunk]);
     }
@@ -326,7 +328,7 @@ mod tests {
             ..input_chunk()
         };
         let chunk1 = RtmpChunk {
-            timestamp: RtmpTimestamp::from_millis((timestamp.wrapping_add(timestamp)) as u32),
+            timestamp: RtmpTimestamp::from_millis(timestamp.wrapping_add(timestamp)),
             ..chunk0.clone()
         };
         let encoded = encode_chunks(&[chunk0.clone(), chunk1.clone()]);
@@ -339,11 +341,11 @@ mod tests {
         // Test case 1: exactly 0xFFFFFF
         let timestamp0 = 0xFFFFFFu32;
         let chunk0_0 = RtmpChunk {
-            timestamp: RtmpTimestamp::from_millis(timestamp0 as u32),
+            timestamp: RtmpTimestamp::from_millis(timestamp0),
             ..input_chunk()
         };
         let chunk0_1 = RtmpChunk {
-            timestamp: RtmpTimestamp::from_millis((timestamp0.wrapping_add(timestamp0)) as u32),
+            timestamp: RtmpTimestamp::from_millis(timestamp0.wrapping_add(timestamp0)),
             ..chunk0_0.clone()
         };
         let encoded0 = encode_chunks(&[chunk0_0.clone(), chunk0_1.clone()]);
@@ -353,11 +355,11 @@ mod tests {
         // Test case 2: 0xFFFFFF - 1
         let timestamp1 = 0xFFFFFEu32;
         let chunk1_0 = RtmpChunk {
-            timestamp: RtmpTimestamp::from_millis(timestamp1 as u32),
+            timestamp: RtmpTimestamp::from_millis(timestamp1),
             ..input_chunk()
         };
         let chunk1_1 = RtmpChunk {
-            timestamp: RtmpTimestamp::from_millis((timestamp1.wrapping_add(timestamp1)) as u32),
+            timestamp: RtmpTimestamp::from_millis(timestamp1.wrapping_add(timestamp1)),
             ..chunk1_0.clone()
         };
         let encoded1 = encode_chunks(&[chunk1_0.clone(), chunk1_1.clone()]);
@@ -367,11 +369,11 @@ mod tests {
         // Test case 3: 0xFFFFFF + 1
         let timestamp2 = 0x1000000u32;
         let chunk2_0 = RtmpChunk {
-            timestamp: RtmpTimestamp::from_millis(timestamp2 as u32),
+            timestamp: RtmpTimestamp::from_millis(timestamp2),
             ..input_chunk()
         };
         let chunk2_1 = RtmpChunk {
-            timestamp: RtmpTimestamp::from_millis((timestamp2.wrapping_add(timestamp2)) as u32),
+            timestamp: RtmpTimestamp::from_millis(timestamp2.wrapping_add(timestamp2)),
             ..chunk2_0.clone()
         };
         let encoded2 = encode_chunks(&[chunk2_0.clone(), chunk2_1.clone()]);
@@ -385,21 +387,19 @@ mod tests {
         let timestamp_delta = 0x12345678u32;
 
         let chunk0 = RtmpChunk {
-            timestamp: RtmpTimestamp::from_millis(timestamp_base as u32),
+            timestamp: RtmpTimestamp::from_millis(timestamp_base),
             ..input_chunk()
         };
         let chunk1 = RtmpChunk {
             message_type: RtmpMessageType::Video,
-            timestamp: RtmpTimestamp::from_millis(
-                (timestamp_base.wrapping_add(timestamp_delta)) as u32,
-            ),
+            timestamp: RtmpTimestamp::from_millis(timestamp_base.wrapping_add(timestamp_delta)),
             ..chunk0.clone()
         };
         let chunk2 = RtmpChunk {
             timestamp: RtmpTimestamp::from_millis(
-                (timestamp_base
+                timestamp_base
                     .wrapping_add(timestamp_delta)
-                    .wrapping_add(timestamp_delta)) as u32,
+                    .wrapping_add(timestamp_delta),
             ),
             ..chunk1.clone()
         };
@@ -416,21 +416,19 @@ mod tests {
         // Test case 1: exactly 0xFFFFFF
         let timestamp_delta0 = 0xFFFFFFu32;
         let chunk0_0 = RtmpChunk {
-            timestamp: RtmpTimestamp::from_millis(timestamp_base as u32),
+            timestamp: RtmpTimestamp::from_millis(timestamp_base),
             ..input_chunk()
         };
         let chunk0_1 = RtmpChunk {
             message_type: RtmpMessageType::Video,
-            timestamp: RtmpTimestamp::from_millis(
-                (timestamp_base.wrapping_add(timestamp_delta0)) as u32,
-            ),
+            timestamp: RtmpTimestamp::from_millis(timestamp_base.wrapping_add(timestamp_delta0)),
             ..chunk0_0.clone()
         };
         let chunk0_2 = RtmpChunk {
             timestamp: RtmpTimestamp::from_millis(
-                (timestamp_base
+                timestamp_base
                     .wrapping_add(timestamp_delta0)
-                    .wrapping_add(timestamp_delta0)) as u32,
+                    .wrapping_add(timestamp_delta0),
             ),
             ..chunk0_1.clone()
         };
@@ -441,21 +439,19 @@ mod tests {
         // Test case 2: 0xFFFFFF - 1
         let timestamp_delta1 = 0xFFFFFEu32;
         let chunk1_0 = RtmpChunk {
-            timestamp: RtmpTimestamp::from_millis(timestamp_base as u32),
+            timestamp: RtmpTimestamp::from_millis(timestamp_base),
             ..input_chunk()
         };
         let chunk1_1 = RtmpChunk {
             message_type: RtmpMessageType::Video,
-            timestamp: RtmpTimestamp::from_millis(
-                (timestamp_base.wrapping_add(timestamp_delta1)) as u32,
-            ),
+            timestamp: RtmpTimestamp::from_millis(timestamp_base.wrapping_add(timestamp_delta1)),
             ..chunk1_0.clone()
         };
         let chunk1_2 = RtmpChunk {
             timestamp: RtmpTimestamp::from_millis(
-                (timestamp_base
+                timestamp_base
                     .wrapping_add(timestamp_delta1)
-                    .wrapping_add(timestamp_delta1)) as u32,
+                    .wrapping_add(timestamp_delta1),
             ),
             ..chunk1_1.clone()
         };
@@ -466,21 +462,19 @@ mod tests {
         // Test case 3: 0xFFFFFF + 1
         let timestamp_delta2 = 0x1000000u32;
         let chunk2_0 = RtmpChunk {
-            timestamp: RtmpTimestamp::from_millis(timestamp_base as u32),
+            timestamp: RtmpTimestamp::from_millis(timestamp_base),
             ..input_chunk()
         };
         let chunk2_1 = RtmpChunk {
             message_type: RtmpMessageType::Video,
-            timestamp: RtmpTimestamp::from_millis(
-                (timestamp_base.wrapping_add(timestamp_delta2)) as u32,
-            ),
+            timestamp: RtmpTimestamp::from_millis(timestamp_base.wrapping_add(timestamp_delta2)),
             ..chunk2_0.clone()
         };
         let chunk2_2 = RtmpChunk {
             timestamp: RtmpTimestamp::from_millis(
-                (timestamp_base
+                timestamp_base
                     .wrapping_add(timestamp_delta2)
-                    .wrapping_add(timestamp_delta2)) as u32,
+                    .wrapping_add(timestamp_delta2),
             ),
             ..chunk2_1.clone()
         };
