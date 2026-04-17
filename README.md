@@ -16,15 +16,13 @@ Please read <https://github.com/shiguredo/oss> before use.
 
 ## 概要
 
-Rust で実装された依存 0 かつ Sans I/O な RTMP ライブラリです。
+Rust で実装された依存 0 かつ `no_std` に対応した Sans I/O な RTMP ライブラリです。
 
 ## 特徴
 
 - Sans I/O
-  - <https://sans-io.readthedocs.io/index.html>
-  - I/O 操作を含まない純粋なプロトコル処理
 - 依存ライブラリ 0
-  - 標準ライブラリのみで実装
+- `no_std` 対応
 
 ## 使い方
 
