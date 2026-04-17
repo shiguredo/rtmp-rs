@@ -744,7 +744,7 @@ checksum = "b135058874815f8f13edae644ceedb659f7238fe4a9e2b1bdceecc72dc659b35"
 
 [[package]]
 name = "shiguredo_rtmp"
-version = "2026.1.0-canary.5"
+version = "2026.1.0-canary.6"
 
 [[package]]
 name = "shlex"
