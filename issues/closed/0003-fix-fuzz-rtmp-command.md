@@ -2,6 +2,7 @@
 
 - Priority: Medium
 - Created: 2026-05-26
+- Completed: 2026-05-26
 - Model: Opus 4.7
 - Branch: feature/fix-fuzz-rtmp-command
 
@@ -36,3 +37,11 @@
 - コマンド名リストに `getStreamLength` が追加されている
 - `cargo fuzz run fuzz_rtmp_command -- -runs=0` でビルドが通る
 - 60 秒間の fuzzing 実行でクラッシュが発生しない
+
+## 解決方法
+
+- `fuzz_rtmp_command.rs` を修正し、入力バイト列全体を AMF0 値として連続デコードするように変更した
+- 最初のデコード値を `object`、2 番目以降を `args` として `RtmpCommand::from_message()` に渡すようにした
+- コマンド名リストに `getStreamLength` を追加した
+- これにより `publish`, `play`, `deleteStream`, `getStreamLength`, `_result`, `onStatus` の 6 コマンドのパースロジックに fuzzer が到達可能になった
+- 60 秒間の fuzzing 実行でクラッシュなしを確認した
