@@ -91,3 +91,10 @@ path = "fuzz_targets/fuzz_rtmp_url.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "fuzz_avc_sequence_header"
+path = "fuzz_targets/fuzz_avc_sequence_header.rs"
+test = false
+doc = false
+bench = false
