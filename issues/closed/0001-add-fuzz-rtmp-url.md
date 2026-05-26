@@ -2,6 +2,7 @@
 
 - Priority: High
 - Created: 2026-05-26
+- Completed: 2026-05-26
 - Model: Opus 4.7
 - Branch: feature/add-fuzz-rtmp-url
 
@@ -48,3 +49,11 @@ bench = false
 - `cargo fuzz list` に `fuzz_rtmp_url` が表示される
 - `cargo fuzz run fuzz_rtmp_url -- -runs=0` でビルドが通る
 - 60 秒間の fuzzing 実行でクラッシュが発生しない
+
+## 解決方法
+
+- `fuzz/fuzz_targets/fuzz_rtmp_url.rs` を新規作成し、`RtmpUrl::parse()` と `RtmpUrl::parse_with_stream_name()` の両方をファジングする fuzz ターゲットを実装した
+- 入力バイト列を `core::str::from_utf8()` で UTF-8 文字列に変換し、`parse()` を呼び出す。成功時は `to_string()` も呼び出してパニック安全性を検証する
+- `parse_with_stream_name()` 用には先頭 1 バイトを分割位置に流用し、残りのバイト列を URL 部分とストリーム名部分に分割する方式を採用した
+- `fuzz/Cargo.toml` に `[[bin]]` エントリを追加した
+- `cargo fuzz run fuzz_rtmp_url -- -runs=0` でビルド通過、60 秒間の fuzzing 実行でクラッシュなしを確認した
