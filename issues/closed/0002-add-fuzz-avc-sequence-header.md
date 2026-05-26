@@ -2,6 +2,7 @@
 
 - Priority: Medium
 - Created: 2026-05-26
+- Completed: 2026-05-26
 - Model: Opus 4.7
 - Branch: feature/add-fuzz-avc-sequence-header
 
@@ -42,3 +43,10 @@ bench = false
 - `cargo fuzz list` に `fuzz_avc_sequence_header` が表示される
 - `cargo fuzz run fuzz_avc_sequence_header -- -runs=0` でビルドが通る
 - 60 秒間の fuzzing 実行でクラッシュが発生しない
+
+## 解決方法
+
+- `fuzz/fuzz_targets/fuzz_avc_sequence_header.rs` を新規作成し、`AvcSequenceHeader::from_bytes()` のファジングを実装した
+- `from_bytes()` が成功した場合は `to_bytes().unwrap()` で不変条件（`from_bytes()` が返す構造体は `to_bytes()` の全エラー条件を満たさない）を検証する
+- `fuzz/Cargo.toml` に `[[bin]]` エントリを追加した
+- `cargo fuzz run fuzz_avc_sequence_header -- -runs=0` でビルド通過、60 秒間の fuzzing 実行でクラッシュなしを確認した
