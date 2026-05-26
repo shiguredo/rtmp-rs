@@ -1,4 +1,4 @@
-# fuzz_rtmp_command を削除する
+# fuzz_rtmp_command の args 生成を修正する
 
 - Priority: Medium
 - Created: 2026-05-26
@@ -7,36 +7,32 @@
 
 ## 目的
 
-現状の `fuzz_rtmp_command` は実質的に機能しておらず、fuzzing のリソースを浪費している。削除して、コマンドパースの fuzzing は `fuzz_rtmp_message` に任せる。
+現状の `fuzz_rtmp_command` は `RtmpCommand::from_message()` に渡す `args` が常に空の `vec![]` であり、`args` を参照するコマンド（`publish`、`play`、`deleteStream`、`getStreamLength`、`_result`、`onStatus`）のパースロジックに到達しない。`args` にも fuzzer 生成の AMF 値を渡すように修正し、これらのコマンドのパース入口（`args.first()` の行）を超えられるようにする。
 
 ## 優先度根拠
 
-Medium。機能していない fuzz ターゲットが存在すること自体が、fuzzing カバレッジに対する誤った安心感を与える。ただし、`fuzz_rtmp_message` が完全なコマンドパースパスをカバーしているため、セキュリティ上の緊急性はない。
+`fuzz_rtmp_command` は `RtmpCommand::from_message()` を直接テストする唯一の fuzz ターゲットである。`fuzz_server_connection` と `fuzz_client_connection` もコマンドパースに到達するが、ハンドシェイクを含むステートマシンを経由するため到達率が低い。既存リストの 7 コマンド中 5 コマンドが args 不足でパースロジックに到達せず、さらに `getStreamLength` がリストに未登録であるため、計 6 コマンドのパースロジックが fuzzing されていない。
 
 ## 現状
 
-`fuzz/fuzz_targets/fuzz_rtmp_command.rs` には以下の問題がある:
+`fuzz/fuzz_targets/fuzz_rtmp_command.rs` は以下の問題を抱えている:
 
-1. `RtmpCommand::from_message()` に渡す `args` が常に空の `vec![]` である。以下のコマンドは `args.first().ok_or_else(...)` で即座にエラーになり、パースロジックに到達しない:
-   - `publish`（`rtmp_command.rs:317-320`）
-   - `play`（`rtmp_command.rs:380-383`）
-   - `deleteStream`（`rtmp_command.rs:436-439`）
-   - `getStreamLength`（`rtmp_command.rs:459-462`）
-   - `_result`（`rtmp_command.rs:493-496`）
-   - `onStatus`（`rtmp_command.rs:539-541`）
-
-2. AMF0 でしかデコードしておらず、AMF3 のパスが一切テストされない
-
-3. `fuzz_rtmp_message` が `RtmpMessageDecoder` 経由でチャンクデコード -> メッセージデコード -> AMF デコード -> コマンドパースの全パスを通るため、`fuzz_rtmp_command` の役割は完全に代替されている
+1. `RtmpCommand::from_message()` に渡す `args` が常に空の `vec![]` であるため、`args.first().ok_or_else(...)` で即座にエラーになり、`publish`、`play`、`deleteStream`、`_result`、`onStatus` の 5 コマンドのパースロジックに到達しない。`connect` と `createStream` は `args` を使わないため機能している
+2. コマンド名リストに `getStreamLength` が含まれていないため、`_` アームで `Ignore` になりパースロジックが呼ばれない
+3. AMF0 でしかデコードしておらず、AMF3 でデコードした AmfValue を入力とするパスがテストされない。ただし `RtmpCommand::from_message()` 自体は `AmfVersion` を引数に取らず、AMF バージョンに依存しないため、AMF3 対応は本 issue のスコープ外とする
 
 ## 設計方針
 
-- `fuzz/fuzz_targets/fuzz_rtmp_command.rs` を削除する
-- `fuzz/Cargo.toml` から対応する `[[bin]]` エントリを削除する
+- `fuzz_rtmp_command.rs` を修正し、入力バイト列から `args` 用の AMF 値もデコードする
+- 入力バイト列全体を AMF0 値として連続デコードし、最初の値を `object`、2 番目以降を `args` として `RtmpCommand::from_message()` に渡す
+- デコードできる AMF 値が 1 つもない場合は早期リターンする
+- コマンド名リストに `getStreamLength` を追加する（既存リストには含まれていないが、`RtmpCommand::from_message()` で明示的にハンドリングされるコマンドである）
+- `transaction_id` は既存の `TransactionId::from_f64(1.0)` のままとする。`transaction_id` の fuzzing は本 issue のスコープ外とする
 
 ## 完了条件
 
-- `fuzz_rtmp_command.rs` が削除されている
-- `fuzz/Cargo.toml` から `fuzz_rtmp_command` の `[[bin]]` エントリが削除されている
-- `cargo fuzz list` に `fuzz_rtmp_command` が表示されない
-- `cargo fuzz build` が通る
+- `fuzz_rtmp_command.rs` が修正されている
+- 入力バイト列から AMF 値が 2 つ以上デコードされた場合に `args` が非空で `RtmpCommand::from_message()` に渡されるコードパスが存在する
+- コマンド名リストに `getStreamLength` が追加されている
+- `cargo fuzz run fuzz_rtmp_command -- -runs=0` でビルドが通る
+- 60 秒間の fuzzing 実行でクラッシュが発生しない
