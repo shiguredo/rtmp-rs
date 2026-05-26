@@ -84,3 +84,10 @@ path = "fuzz_targets/fuzz_server_connection.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "fuzz_rtmp_url"
+path = "fuzz_targets/fuzz_rtmp_url.rs"
+test = false
+doc = false
+bench = false
