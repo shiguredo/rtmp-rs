@@ -2,7 +2,7 @@
 name = "shiguredo_rtmp"
 version = "2026.1.0-canary.6"
 edition = "2024"
-rust-version = "1.88"
+rust-version = "1.93"
 description = "RTMP library"
 readme = "README.md"
 homepage = "https://github.com/shiguredo/rtmp-rs"
