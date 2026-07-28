@@ -5,7 +5,7 @@
 - Completed: {YYYY-MM-DD}
 - Model: Fable 5
 - Branch: feature/add-enhanced-rtmp-video-foundation
-- Polished: {YYYY-MM-DD}
+- Polished: 2026-07-28
 
 ## 目的
 
@@ -41,7 +41,7 @@ High。0004-0008 の全映像コーデック issue が本 issue にブロック�
   - `VideoPacketType`: SequenceStart=0, CodedFrames=1, SequenceEnd=2, CodedFramesX=3, Metadata=4, MPEG2TSSequenceStart=5, Multitrack=6, ModEx=7
   - `VideoFourCc`: Vp8=`vp08`, Vp9=`vp09`, Av1=`av01`, Avc=`avc1`, Hevc=`hvc1`, Vvc=`vvc1`
 - エラー分類 (仕様 1090 行の MUST「fail in a controlled and predictable manner」への対応):
-  - 認識できない値 (VideoFrameType 予約値 0/6/7、VideoPacketType 予約値 8-15、未知 FourCC) は `Error::invalid_data` (legacy 経路の未知値と同じ分類)
+  - 認識できない値 (VideoFrameType 予約値 0/6/7、VideoPacketType 予約値 8-15、VideoCommand 予約値 2-255、未知 FourCC) は `Error::invalid_data` (legacy 経路の未知値と同じ分類)
   - 認識できるが本 issue で未実装の値 (Metadata / MPEG2TSSequenceStart / Multitrack / ModEx、および avc1 以外の既知 FourCC) は `Error::unsupported`。これは仕様 MUST の直接要求ではなく、「認識した上で未対応」を区別する本ライブラリの設計判断である
 - `avc1` のペイロード処理:
   - `SequenceStart`: ボディは AVCDecoderConfigurationRecord。既存 `AvcSequenceHeader` (`src/media.rs:226`) をそのまま利用し、`VideoFrame::data` に生バイトで格納する (legacy AVC と同じ慣行)
@@ -51,7 +51,10 @@ High。0004-0008 の全映像コーデック issue が本 issue にブロック�
 - `VideoFrame` のデータモデル:
   - `CodedFrames` (SI24 明示) と `CodedFramesX` (暗黙 0) は別のワイヤ表現であり、round-trip のために `VideoPacketType` 相当をフレームに保持する。compositionTimeOffset の値だけを持つ設計は不可
   - `VideoCodec` は legacy VideoCodecId (Jpeg=1 〜 Avc=7) と FourCC 系 (ExAvc / ExHevc 等、FourCC で表現されるコーデック) の統合 enum に再構成する。`src/flv.rs:98` の `frame.codec as u8` キャストは成立しなくなるため、legacy コーデック ID への変換は明示的メソッド (例: `legacy_codec_id() -> Option<u8>`) に置き換える
-  - これは公開 API の破壊的変更である。影響箇所: `src/flv.rs:98` のキャスト、`pbt/tests/prop_media.rs:203-208` の値域検証、`tests/rtmp_publish_client_test.rs:162` / `tests/rtmp_play_client_test.rs:54, 191` / `examples/publish/src/main.rs:348-372` / `examples/server/src/main.rs` の `VideoFrame` フィールドリテラル構築。これらの修正も本 issue のスコープに含める
+  - Command フレーム (VideoFrameType.Command + VideoCommand) は FourCC を持たない (仕様 1207-1215 行「ExVideoTagBody has no payload」)。`VideoFrame` の `codec` フィールドでは表現できないため、`decode_video_frame` の返り値を `Result<DecodedVideo, Error>` に変更し、`DecodedVideo` は `Frame(VideoFrame)` / `Command(VideoCommand)` の enum とする。あるいは `VideoFrame` に `Option<VideoCommand>` フィールドを追加し、Command 時は codec を dummy 値にする設計も考えられるが、前者 (enum 返り値) を採用する (型安全性のため)。`encode_video_frame` も `DecodedVideo` を受け取るように変更する
+  - 既存フィールドの ex 経路での扱い: `avc_packet_type` は `Option` のまま維持し、ex 経路では `None` とする (VideoPacketType フィールドで代替)。`composition_timestamp_offset` は ex の SequenceStart / SequenceEnd では `RtmpTimestampDelta::ZERO`、CodedFramesX でも `ZERO` (暗黙 0)、CodedFrames のみ SI24 から取得した値を設定する
+  - これは公開 API の破壊的変更である。影響箇所: `src/flv.rs:96,98` のシグネチャとキャスト、`pbt/tests/prop_flv.rs:135,163` / `pbt/tests/prop_media.rs:115,203-208` / `pbt/tests/prop_rtmp_message.rs:255` / `pbt/tests/prop_rtmp_server_connection.rs:74,94` / `pbt/tests/prop_rtmp_client_connection.rs:88` / `pbt/tests/prop_rtmp_connection.rs:104,123` の VideoFrame 構築・encode 呼び出し、`tests/rtmp_publish_client_test.rs:162` / `tests/rtmp_play_client_test.rs:54, 191` / `examples/publish/src/main.rs:348-372` の VideoFrame フィールドリテラル構築、`src/rtmp_connection.rs:328` / `src/rtmp_message.rs:463` の crate 内ユニットテスト、`fuzz/fuzz_targets/fuzz_flv.rs:21-24` の再エンコード経路。これらの修正も本 issue のスコープに含める
+  - `encode_video_frame` は現状 `()` を返すが、ex 経路の検証 (SequenceEnd で data 非空時のエラー等) のため `Result<(), Error>` にシグネチャを変更する。legacy 経路は `Ok(())` を返すのみで動作不変
   - `encode_video_frame` が `avc_packet_type.is_some()` をトリガーに AVC 拡張部を書く一方、`decode_video_frame` は `codec == Avc && frame_type != VideoInfoOrCommandFrame` で分岐する非対称 (`src/flv.rs:102`, `src/flv.rs:153`) があるため、ex 経路の追加時に encode / decode の分岐条件を対で設計し round-trip を保証する
 - 単一 video message に複数の VideoPacketType が入り得るという Important 注記 (仕様 1092 行「the bitstream MUST be processed completely」) は、主に Multitrack / Metadata のバッチを想定したものである。本基盤では非 Multitrack の単一パケットのみを扱い、バッチ処理の設計は 0014 / 0015 に委ねる。この判断を実装コメントに残す
 - 既存の legacy 経路 (IsExVideoHeader=0) の動作は一切変更しない
