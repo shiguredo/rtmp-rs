@@ -487,11 +487,11 @@ mod tests {
     fn decode_multiple_chunk_stream_ids() {
         let chunk0 = input_chunk();
         let chunk1 = RtmpChunk {
-            chunk_stream_id: RtmpChunkStreamId::new(10).unwrap(),
+            chunk_stream_id: RtmpChunkStreamId::new(10).expect("valid chunk stream id"),
             ..chunk0.clone()
         };
         let chunk2 = RtmpChunk {
-            chunk_stream_id: RtmpChunkStreamId::new(100).unwrap(),
+            chunk_stream_id: RtmpChunkStreamId::new(100).expect("valid chunk stream id"),
             ..chunk0.clone()
         };
         let encoded = encode_chunks(&[chunk0.clone(), chunk1.clone(), chunk2.clone()]);
@@ -522,7 +522,7 @@ mod tests {
         encoder.encode(&mut buf, &chunk0);
         encoder.encode(&mut buf, &chunk1);
 
-        encoder.set_chunk_size(RtmpChunkSize::new(256).unwrap());
+        encoder.set_chunk_size(RtmpChunkSize::new(256).expect("valid chunk size"));
 
         encoder.encode(&mut buf, &chunk2);
         encoder.encode(&mut buf, &chunk3);
@@ -542,7 +542,7 @@ mod tests {
             }
         }
 
-        decoder.set_chunk_size(RtmpChunkSize::new(256).unwrap());
+        decoder.set_chunk_size(RtmpChunkSize::new(256).expect("valid chunk size"));
 
         while decoded.len() < 4 {
             let (size, chunk) = decoder.decode(remaining).expect("bug");

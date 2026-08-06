@@ -39,7 +39,7 @@ proptest! {
         let result = ts_a.checked_sub(ts_b);
         if a >= b {
             prop_assert!(result.is_some());
-            prop_assert_eq!(result.unwrap().as_millis(), a - b);
+            prop_assert_eq!(result.expect("result must be some").as_millis(), a - b);
         } else {
             prop_assert!(result.is_none());
         }

@@ -251,7 +251,7 @@ mod tests {
     }
 
     fn encode_decode_roundtrip(message: RtmpMessage) -> RtmpMessage {
-        let chunk_stream_id = RtmpChunkStreamId::new(3).unwrap();
+        let chunk_stream_id = RtmpChunkStreamId::new(3).expect("valid chunk stream id");
         let mut encoder = RtmpMessageEncoder::default();
         let mut buf = Vec::new();
 
@@ -260,14 +260,17 @@ mod tests {
         let mut decoder = RtmpMessageDecoder::default();
 
         decoder.feed_buf(&buf);
-        decoder.decode().unwrap().unwrap()
+        decoder
+            .decode()
+            .expect("decode must not fail for encoded message")
+            .expect("message must exist")
     }
 
     #[test]
     fn test_set_chunk_size_decode_encode() {
         let msg = RtmpMessage::SetChunkSize {
             header: pcm_header(0),
-            size: RtmpChunkSize::new(1234).unwrap(),
+            size: RtmpChunkSize::new(1234).expect("valid chunk size"),
         };
 
         let decoded = encode_decode_roundtrip(msg.clone());
@@ -278,7 +281,7 @@ mod tests {
     fn test_abort_decode_encode() {
         let msg = RtmpMessage::Abort {
             header: pcm_header(0),
-            chunk_stream_id: RtmpChunkStreamId::new(10).unwrap(),
+            chunk_stream_id: RtmpChunkStreamId::new(10).expect("valid chunk stream id"),
         };
 
         let decoded = encode_decode_roundtrip(msg.clone());

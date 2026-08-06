@@ -202,7 +202,7 @@ mod tests {
 
     #[test]
     fn test_basic_rtmp_url() {
-        let url = RtmpUrl::from_str("rtmp://example.com:1935/live/stream").unwrap();
+        let url = RtmpUrl::from_str("rtmp://example.com:1935/live/stream").expect("valid RTMP URL");
         assert_eq!(url.host, "example.com");
         assert_eq!(url.port, 1935);
         assert_eq!(url.app, "live");
@@ -212,7 +212,7 @@ mod tests {
 
     #[test]
     fn test_rtmps_url() {
-        let url = RtmpUrl::from_str("rtmps://example.com:443/live/stream").unwrap();
+        let url = RtmpUrl::from_str("rtmps://example.com:443/live/stream").expect("valid RTMP URL");
         assert_eq!(url.host, "example.com");
         assert_eq!(url.port, 443);
         assert_eq!(url.app, "live");
@@ -222,19 +222,19 @@ mod tests {
 
     #[test]
     fn test_default_port_rtmp() {
-        let url = RtmpUrl::from_str("rtmp://example.com/live/stream").unwrap();
+        let url = RtmpUrl::from_str("rtmp://example.com/live/stream").expect("valid RTMP URL");
         assert_eq!(url.port, 1935);
     }
 
     #[test]
     fn test_default_port_rtmps() {
-        let url = RtmpUrl::from_str("rtmps://example.com/live/stream").unwrap();
+        let url = RtmpUrl::from_str("rtmps://example.com/live/stream").expect("valid RTMP URL");
         assert_eq!(url.port, 443);
     }
 
     #[test]
     fn test_nested_app_path() {
-        let url = RtmpUrl::from_str("rtmp://example.com/app/path/stream").unwrap();
+        let url = RtmpUrl::from_str("rtmp://example.com/app/path/stream").expect("valid RTMP URL");
         assert_eq!(url.app, "app/path");
         assert_eq!(url.stream_name, "stream");
     }
@@ -266,7 +266,7 @@ mod tests {
     #[test]
     fn test_round_trip() {
         let original = "rtmp://example.com:1935/live/stream";
-        let url = RtmpUrl::from_str(original).unwrap();
+        let url = RtmpUrl::from_str(original).expect("valid RTMP URL");
         assert_eq!(url.to_string(), original);
     }
 
@@ -320,13 +320,13 @@ mod tests {
 
     #[test]
     fn test_ipv4_address() {
-        let url = RtmpUrl::from_str("rtmp://192.168.1.1:1935/live/stream").unwrap();
+        let url = RtmpUrl::from_str("rtmp://192.168.1.1:1935/live/stream").expect("valid RTMP URL");
         assert_eq!(url.host, "192.168.1.1");
     }
 
     #[test]
     fn test_clone_and_equality() {
-        let url1 = RtmpUrl::from_str("rtmp://example.com/live/stream").unwrap();
+        let url1 = RtmpUrl::from_str("rtmp://example.com/live/stream").expect("valid RTMP URL");
         let url2 = url1.clone();
         assert_eq!(url1, url2);
     }
@@ -334,7 +334,7 @@ mod tests {
     // IPv6 対応テストケース
     #[test]
     fn test_ipv6_address_with_port() {
-        let url = RtmpUrl::from_str("rtmp://[::1]:1935/live/stream").unwrap();
+        let url = RtmpUrl::from_str("rtmp://[::1]:1935/live/stream").expect("valid RTMP URL");
         assert_eq!(url.host, "[::1]");
         assert_eq!(url.port, 1935);
         assert_eq!(url.app, "live");
@@ -343,21 +343,22 @@ mod tests {
 
     #[test]
     fn test_ipv6_address_full() {
-        let url = RtmpUrl::from_str("rtmp://[2001:db8::1]:1935/live/stream").unwrap();
+        let url =
+            RtmpUrl::from_str("rtmp://[2001:db8::1]:1935/live/stream").expect("valid RTMP URL");
         assert_eq!(url.host, "[2001:db8::1]");
         assert_eq!(url.port, 1935);
     }
 
     #[test]
     fn test_ipv6_address_default_port_rtmp() {
-        let url = RtmpUrl::from_str("rtmp://[::1]/live/stream").unwrap();
+        let url = RtmpUrl::from_str("rtmp://[::1]/live/stream").expect("valid RTMP URL");
         assert_eq!(url.host, "[::1]");
         assert_eq!(url.port, 1935);
     }
 
     #[test]
     fn test_ipv6_address_default_port_rtmps() {
-        let url = RtmpUrl::from_str("rtmps://[::1]/live/stream").unwrap();
+        let url = RtmpUrl::from_str("rtmps://[::1]/live/stream").expect("valid RTMP URL");
         assert_eq!(url.host, "[::1]");
         assert_eq!(url.port, 443);
     }
@@ -389,7 +390,7 @@ mod tests {
     #[test]
     fn test_ipv6_round_trip() {
         let original = "rtmp://[::1]:1935/live/stream";
-        let url = RtmpUrl::from_str(original).unwrap();
+        let url = RtmpUrl::from_str(original).expect("valid RTMP URL");
         assert_eq!(url.to_string(), original);
     }
 

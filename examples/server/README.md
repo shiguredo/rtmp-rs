@@ -25,4 +25,3 @@ cargo run -p publish --app live --stream stream /path/to/input.mp4
 ```bash
 ffplay rtmp://127.0.0.1:1935/live/stream
 ```
-

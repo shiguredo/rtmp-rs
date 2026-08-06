@@ -5,19 +5,31 @@ edition = "2024"
 publish = false
 
 [dependencies]
-noargs = "0.4.2"
-shiguredo_rtmp = { path = "../.." }
-rustls = { version = "0.23", default-features = false, features = [
+# コマンドライン引数のパースに使用する
+noargs = "0.4"
+# RTMPS (TLS) 配信に使用する
+rustls = {
+  version = "0.23",
+  default-features = false,
+  features = [
+    "aws-lc-rs",
     "std",
     "tls12",
-    "aws-lc-rs",
-] }
-tokio = { version = "1", features = [
-    "rt-multi-thread",
-    "net",
+  ]
+}
+# RTMP サーバに使用するライブラリ本体
+shiguredo_rtmp = { path = "../.." }
+# 非同期 I/O とイベントループに使用する
+tokio = {
+  version = "1.52",
+  features = [
     "io-util",
     "macros",
+    "net",
+    "rt-multi-thread",
     "sync",
     "time",
-] }
+  ]
+}
+# rustls と tokio を橋渡しする TLS ストリームに使用する
 tokio-rustls = "0.26"

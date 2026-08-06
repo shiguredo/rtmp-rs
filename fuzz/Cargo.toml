@@ -1,100 +1,100 @@
 [package]
 name = "fuzz"
 version = "0.0.0"
-publish = false
 edition = "2024"
-
-[workspace]
+publish = false
 
 [package.metadata]
 cargo-fuzz = true
+
+[workspace]
+
+[[bin]]
+bench = false
+doc = false
+name = "fuzz_rtmp_chunk"
+path = "fuzz_targets/fuzz_rtmp_chunk.rs"
+test = false
+
+[[bin]]
+bench = false
+doc = false
+name = "fuzz_rtmp_message"
+path = "fuzz_targets/fuzz_rtmp_message.rs"
+test = false
+
+[[bin]]
+bench = false
+doc = false
+name = "fuzz_amf0"
+path = "fuzz_targets/fuzz_amf0.rs"
+test = false
+
+[[bin]]
+bench = false
+doc = false
+name = "fuzz_amf3"
+path = "fuzz_targets/fuzz_amf3.rs"
+test = false
+
+[[bin]]
+bench = false
+doc = false
+name = "fuzz_handshake"
+path = "fuzz_targets/fuzz_handshake.rs"
+test = false
+
+[[bin]]
+bench = false
+doc = false
+name = "fuzz_user_control"
+path = "fuzz_targets/fuzz_user_control.rs"
+test = false
+
+[[bin]]
+bench = false
+doc = false
+name = "fuzz_rtmp_command"
+path = "fuzz_targets/fuzz_rtmp_command.rs"
+test = false
+
+[[bin]]
+bench = false
+doc = false
+name = "fuzz_flv"
+path = "fuzz_targets/fuzz_flv.rs"
+test = false
+
+[[bin]]
+bench = false
+doc = false
+name = "fuzz_client_connection"
+path = "fuzz_targets/fuzz_client_connection.rs"
+test = false
+
+[[bin]]
+bench = false
+doc = false
+name = "fuzz_server_connection"
+path = "fuzz_targets/fuzz_server_connection.rs"
+test = false
+
+[[bin]]
+bench = false
+doc = false
+name = "fuzz_rtmp_url"
+path = "fuzz_targets/fuzz_rtmp_url.rs"
+test = false
+
+[[bin]]
+bench = false
+doc = false
+name = "fuzz_avc_sequence_header"
+path = "fuzz_targets/fuzz_avc_sequence_header.rs"
+test = false
 
 [dependencies]
 libfuzzer-sys = "0.4"
 
 [dependencies.shiguredo_rtmp]
 path = ".."
-
-[[bin]]
-name = "fuzz_rtmp_chunk"
-path = "fuzz_targets/fuzz_rtmp_chunk.rs"
-test = false
-doc = false
-bench = false
-
-[[bin]]
-name = "fuzz_rtmp_message"
-path = "fuzz_targets/fuzz_rtmp_message.rs"
-test = false
-doc = false
-bench = false
-
-[[bin]]
-name = "fuzz_amf0"
-path = "fuzz_targets/fuzz_amf0.rs"
-test = false
-doc = false
-bench = false
-
-[[bin]]
-name = "fuzz_amf3"
-path = "fuzz_targets/fuzz_amf3.rs"
-test = false
-doc = false
-bench = false
-
-[[bin]]
-name = "fuzz_handshake"
-path = "fuzz_targets/fuzz_handshake.rs"
-test = false
-doc = false
-bench = false
-
-[[bin]]
-name = "fuzz_user_control"
-path = "fuzz_targets/fuzz_user_control.rs"
-test = false
-doc = false
-bench = false
-
-[[bin]]
-name = "fuzz_rtmp_command"
-path = "fuzz_targets/fuzz_rtmp_command.rs"
-test = false
-doc = false
-bench = false
-
-[[bin]]
-name = "fuzz_flv"
-path = "fuzz_targets/fuzz_flv.rs"
-test = false
-doc = false
-bench = false
-
-[[bin]]
-name = "fuzz_client_connection"
-path = "fuzz_targets/fuzz_client_connection.rs"
-test = false
-doc = false
-bench = false
-
-[[bin]]
-name = "fuzz_server_connection"
-path = "fuzz_targets/fuzz_server_connection.rs"
-test = false
-doc = false
-bench = false
-
-[[bin]]
-name = "fuzz_rtmp_url"
-path = "fuzz_targets/fuzz_rtmp_url.rs"
-test = false
-doc = false
-bench = false
-
-[[bin]]
-name = "fuzz_avc_sequence_header"
-path = "fuzz_targets/fuzz_avc_sequence_header.rs"
-test = false
-doc = false
-bench = false

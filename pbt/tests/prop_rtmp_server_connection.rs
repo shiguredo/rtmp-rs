@@ -132,7 +132,7 @@ fn perform_handshake(server: &mut RtmpServerConnection) {
 fn encode_message(message: RtmpMessage) -> Vec<u8> {
     let mut encoder = RtmpMessageEncoder::default();
     let mut buf = Vec::new();
-    let chunk_stream_id = RtmpChunkStreamId::new(3).unwrap();
+    let chunk_stream_id = RtmpChunkStreamId::new(3).expect("infallible");
     encoder.encode(&mut buf, chunk_stream_id, message);
     buf
 }

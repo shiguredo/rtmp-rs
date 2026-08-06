@@ -10,23 +10,23 @@ use shiguredo_rtmp::tests::{
 fn arb_chunk_stream_id() -> impl Strategy<Value = RtmpChunkStreamId> {
     prop_oneof![
         // 1 バイトエンコード範囲 (2-63)
-        (2u32..=63).prop_map(|id| RtmpChunkStreamId::new(id).unwrap()),
+        (2u32..=63).prop_map(|id| RtmpChunkStreamId::new(id).expect("infallible")),
         // 2 バイトエンコード範囲 (64-319)
-        (64u32..=319).prop_map(|id| RtmpChunkStreamId::new(id).unwrap()),
+        (64u32..=319).prop_map(|id| RtmpChunkStreamId::new(id).expect("infallible")),
         // 3 バイトエンコード範囲 (320-65599)
-        (320u32..=65599).prop_map(|id| RtmpChunkStreamId::new(id).unwrap()),
+        (320u32..=65599).prop_map(|id| RtmpChunkStreamId::new(id).expect("infallible")),
     ]
 }
 
 /// RtmpChunkStreamId の境界値を生成する Strategy
 fn arb_chunk_stream_id_boundary() -> impl Strategy<Value = RtmpChunkStreamId> {
     prop_oneof![
-        Just(RtmpChunkStreamId::new(2).unwrap()),     // MIN
-        Just(RtmpChunkStreamId::new(63).unwrap()),    // 1 バイト上限
-        Just(RtmpChunkStreamId::new(64).unwrap()),    // 2 バイト下限
-        Just(RtmpChunkStreamId::new(319).unwrap()),   // 2 バイト上限
-        Just(RtmpChunkStreamId::new(320).unwrap()),   // 3 バイト下限
-        Just(RtmpChunkStreamId::new(65599).unwrap()), // MAX
+        Just(RtmpChunkStreamId::new(2).expect("infallible")), // MIN
+        Just(RtmpChunkStreamId::new(63).expect("infallible")), // 1 バイト上限
+        Just(RtmpChunkStreamId::new(64).expect("infallible")), // 2 バイト下限
+        Just(RtmpChunkStreamId::new(319).expect("infallible")), // 2 バイト上限
+        Just(RtmpChunkStreamId::new(320).expect("infallible")), // 3 バイト下限
+        Just(RtmpChunkStreamId::new(65599).expect("infallible")), // MAX
     ]
 }
 
@@ -157,7 +157,7 @@ proptest! {
         let (size, decoded) = decode_one_message(&mut decoder, &buf);
 
         prop_assert!(decoded.is_some(), "decoded chunk should not be None");
-        let decoded = decoded.unwrap();
+        let decoded = decoded.expect("decoded chunk must exist");
 
         prop_assert_eq!(&decoded, &chunk, "roundtrip should preserve chunk data");
         prop_assert_eq!(size, buf.len(), "decoder should consume all bytes");
@@ -174,7 +174,7 @@ proptest! {
         let (size, decoded) = decode_one_message(&mut decoder, &buf);
 
         prop_assert!(decoded.is_some(), "decoded chunk should not be None");
-        let decoded = decoded.unwrap();
+        let decoded = decoded.expect("decoded chunk must exist");
 
         prop_assert_eq!(&decoded, &chunk, "roundtrip should preserve chunk data");
         prop_assert_eq!(size, buf.len(), "decoder should consume all bytes");
@@ -183,7 +183,7 @@ proptest! {
     /// チャンクストリーム ID のエンコードサイズが正しいことを検証
     #[test]
     fn chunk_stream_id_encoding_size(id in 2u32..=65599u32) {
-        let chunk_stream_id = RtmpChunkStreamId::new(id).unwrap();
+        let chunk_stream_id = RtmpChunkStreamId::new(id).expect("infallible");
         let chunk = RtmpChunk {
             chunk_stream_id,
             message_stream_id: RtmpMessageStreamId::PCM,
@@ -217,7 +217,7 @@ proptest! {
     fn extended_timestamp_encoding(timestamp_ms in 0u32..=0x2000000u32) {
         let timestamp = RtmpTimestamp::from_millis(timestamp_ms);
         let chunk = RtmpChunk {
-            chunk_stream_id: RtmpChunkStreamId::new(4).unwrap(),
+            chunk_stream_id: RtmpChunkStreamId::new(4).expect("infallible"),
             message_stream_id: RtmpMessageStreamId::PCM,
             message_type: RtmpMessageType::Ack,
             timestamp,
@@ -288,13 +288,13 @@ mod additional_tests {
 
     #[test]
     fn chunk_stream_id_min() {
-        let id = RtmpChunkStreamId::new(2).unwrap();
+        let id = RtmpChunkStreamId::new(2).expect("infallible");
         assert_eq!(id.get(), 2);
     }
 
     #[test]
     fn chunk_stream_id_max() {
-        let id = RtmpChunkStreamId::new(65599).unwrap();
+        let id = RtmpChunkStreamId::new(65599).expect("infallible");
         assert_eq!(id.get(), 65599);
     }
 
@@ -307,7 +307,7 @@ mod additional_tests {
     #[test]
     fn empty_payload_roundtrip() {
         let chunk = RtmpChunk {
-            chunk_stream_id: RtmpChunkStreamId::new(4).unwrap(),
+            chunk_stream_id: RtmpChunkStreamId::new(4).expect("infallible"),
             message_stream_id: RtmpMessageStreamId::PCM,
             message_type: RtmpMessageType::Ack,
             timestamp: RtmpTimestamp::ZERO,
@@ -319,7 +319,9 @@ mod additional_tests {
         encoder.encode(&mut buf, &chunk);
 
         let mut decoder = RtmpChunkDecoder::default();
-        let (_, decoded) = decoder.decode(&buf).unwrap();
-        assert_eq!(decoded.unwrap(), chunk);
+        let (_, decoded) = decoder
+            .decode(&buf)
+            .expect("decode must not fail for encoded chunk");
+        assert_eq!(decoded.expect("decoded chunk must exist"), chunk);
     }
 }

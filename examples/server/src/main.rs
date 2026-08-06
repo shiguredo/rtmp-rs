@@ -41,6 +41,8 @@ async fn main() -> noargs::Result<()> {
     let addr = format!("{}:{}", options.host, options.port);
     let listener = TcpListener::bind(&addr).await?;
 
+    // ストリームごとの共有状態。クライアント接続タスク間で共有するため Mutex で保護する
+    // (理由の詳細は ClientConnectionHandler::shared_state のコメントを参照)
     let media_streams = Arc::new(Mutex::new(HashMap::new()));
     let mut client_id: usize = 0;
 
@@ -209,6 +211,10 @@ impl RtmpStream {
 }
 
 struct ClientConnectionHandler {
+    // ストリームごとの共有状態 (配信者・プレイヤー一覧) を保持する
+    // 複数のクライアント接続タスクが publish 重複チェック・player 登録・フレーム転送先の解決で参照・更新するため
+    // チャネル構成にすると状態の所有者が単一タスクになり、各クライアントタスクは状態の問い合わせと応答の往復が必要になるため Mutex を選んだ
+    // フレーム本体の転送は mpsc チャネル (media_tx) で行い、ロックの保持は状態の参照・更新だけに限定している
     shared_state: Arc<Mutex<HashMap<StreamId, MediaStreamState>>>,
     client_id: usize,
     stream: RtmpStream,

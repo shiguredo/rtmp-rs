@@ -46,9 +46,9 @@ fn arb_pcm_header() -> impl Strategy<Value = RtmpMessageHeader> {
 fn arb_chunk_size() -> impl Strategy<Value = RtmpChunkSize> {
     prop_oneof![
         // 境界値
-        Just(RtmpChunkSize::new(1).unwrap()),
-        Just(RtmpChunkSize::new(128).unwrap()),   // デフォルト
-        Just(RtmpChunkSize::new(65536).unwrap()), // MAX
+        Just(RtmpChunkSize::new(1).expect("infallible")),
+        Just(RtmpChunkSize::new(128).expect("infallible")), // デフォルト
+        Just(RtmpChunkSize::new(65536).expect("infallible")), // MAX
         // 一般的な値
         (1usize..=65536).prop_filter_map("valid chunk size", RtmpChunkSize::new),
     ]
@@ -59,12 +59,12 @@ fn arb_chunk_size() -> impl Strategy<Value = RtmpChunkSize> {
 fn arb_chunk_stream_id() -> impl Strategy<Value = RtmpChunkStreamId> {
     prop_oneof![
         // 境界値
-        Just(RtmpChunkStreamId::new(2).unwrap()),
-        Just(RtmpChunkStreamId::new(63).unwrap()),
-        Just(RtmpChunkStreamId::new(64).unwrap()),
-        Just(RtmpChunkStreamId::new(319).unwrap()),
-        Just(RtmpChunkStreamId::new(320).unwrap()),
-        Just(RtmpChunkStreamId::new(65599).unwrap()),
+        Just(RtmpChunkStreamId::new(2).expect("infallible")),
+        Just(RtmpChunkStreamId::new(63).expect("infallible")),
+        Just(RtmpChunkStreamId::new(64).expect("infallible")),
+        Just(RtmpChunkStreamId::new(319).expect("infallible")),
+        Just(RtmpChunkStreamId::new(320).expect("infallible")),
+        Just(RtmpChunkStreamId::new(65599).expect("infallible")),
         // 一般的な値
         (2u32..=65599).prop_filter_map("valid chunk stream id", RtmpChunkStreamId::new),
     ]
@@ -716,7 +716,7 @@ proptest! {
 
 /// encode → decode の roundtrip テストを行う
 fn roundtrip_test(message: RtmpMessage) -> Result<(), TestCaseError> {
-    let chunk_stream_id = RtmpChunkStreamId::new(3).unwrap();
+    let chunk_stream_id = RtmpChunkStreamId::new(3).expect("infallible");
     let mut encoder = RtmpMessageEncoder::default();
     let mut buf = Vec::new();
 

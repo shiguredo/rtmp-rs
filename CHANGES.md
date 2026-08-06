@@ -13,3 +13,8 @@
 
 - [CHANGE] MSRV (rust-version) を 1.93 に上げる
   - @voluntas
+
+### misc
+
+- [UPDATE] shiguredo-rust スキル規約に合わせて整備する
+  - @voluntas

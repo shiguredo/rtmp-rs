@@ -5,20 +5,34 @@ edition = "2024"
 publish = false
 
 [dependencies]
-noargs = "0.4.2"
-shiguredo_mp4 = "2026.1.0"
-shiguredo_rtmp = { path = "../.." }
-rustls = { version = "0.23", default-features = false, features = [
+# コマンドライン引数のパースに使用する
+noargs = "0.4"
+# RTMPS (TLS) 配信に使用する
+rustls = {
+  version = "0.23",
+  default-features = false,
+  features = [
+    "aws-lc-rs",
     "std",
     "tls12",
-    "aws-lc-rs",
-] }
+  ]
+}
+# サーバ証明書のプラットフォーム検証に使用する
 rustls-platform-verifier = "0.6"
-tokio = { version = "1", features = [
-    "rt-multi-thread",
-    "net",
+# MP4 ファイルのトラック情報の読み取りに使用する
+shiguredo_mp4 = "2026.1"
+# RTMP 配信に使用するライブラリ本体
+shiguredo_rtmp = { path = "../.." }
+# 非同期 I/O とイベントループに使用する
+tokio = {
+  version = "1.52",
+  features = [
     "io-util",
     "macros",
+    "net",
+    "rt-multi-thread",
     "time",
-] }
+  ]
+}
+# rustls と tokio を橋渡しする TLS ストリームに使用する
 tokio-rustls = "0.26"

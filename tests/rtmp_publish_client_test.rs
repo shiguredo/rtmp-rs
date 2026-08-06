@@ -41,7 +41,6 @@ fn run_rtmp_server(listener: std::net::TcpListener, tx: mpsc::Sender<MediaFrame>
         while let Some(event) = conn.next_event() {
             dbg!(&event);
             // ガードにすると `frame` をパターンより先にムーブできないため折りたたみはできない
-            #[allow(clippy::collapsible_match)]
             match event {
                 RtmpConnectionEvent::PublishRequested { stream_name, .. } => {
                     println!("Publish requested for stream: {stream_name}");

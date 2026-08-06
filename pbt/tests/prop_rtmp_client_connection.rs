@@ -105,7 +105,7 @@ fn encode_message(message: RtmpMessage) -> Vec<u8> {
     let mut buf = Vec::new();
     encoder.encode(
         &mut buf,
-        shiguredo_rtmp::tests::RtmpChunkStreamId::new(3).unwrap(),
+        shiguredo_rtmp::tests::RtmpChunkStreamId::new(3).expect("infallible"),
         message,
     );
     buf
@@ -450,7 +450,7 @@ proptest! {
 
         let set_chunk_size = RtmpMessage::SetChunkSize {
             header: RtmpMessageHeader::PCM,
-            size: RtmpChunkSize::new(128).unwrap(),
+            size: RtmpChunkSize::new(128).expect("infallible"),
         };
         client
             .feed_recv_buf(&encode_message(set_chunk_size))

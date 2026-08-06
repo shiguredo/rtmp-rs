@@ -22,4 +22,3 @@ cargo run -p server
 ```bash
 ffplay -listen 1 -i rtmp://127.0.0.1:1935/live/stream
 ```
-

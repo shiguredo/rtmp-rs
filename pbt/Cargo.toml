@@ -5,5 +5,6 @@ edition = "2024"
 publish = false
 
 [dev-dependencies]
+# ランダム値生成とプロパティ検証 (PBT) に使用する
+proptest = "1.9"
 shiguredo_rtmp = { path = "../" }
-proptest = "1.9.0"

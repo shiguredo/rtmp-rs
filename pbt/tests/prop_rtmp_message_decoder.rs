@@ -9,7 +9,7 @@ use shiguredo_rtmp::tests::{
 /// 指定した MessageType と Payload からチャンクを組み立てる
 fn encode_chunk(message_type: RtmpMessageType, payload: Vec<u8>) -> Vec<u8> {
     let chunk = RtmpChunk {
-        chunk_stream_id: RtmpChunkStreamId::new(3).unwrap(),
+        chunk_stream_id: RtmpChunkStreamId::new(3).expect("infallible"),
         message_stream_id: RtmpMessageStreamId::PCM,
         message_type,
         timestamp: RtmpTimestamp::from_millis(0),
@@ -33,7 +33,10 @@ fn command_amf3_zero_prefix_treated_as_amf0() {
     let buf = encode_chunk(RtmpMessageType::CommandAmf3, payload);
     let mut decoder = RtmpMessageDecoder::default();
     decoder.feed_buf(&buf);
-    let message = decoder.decode().unwrap().unwrap();
+    let message = decoder
+        .decode()
+        .expect("decode must not fail for encoded message")
+        .expect("message must exist");
 
     match message {
         RtmpMessage::Command {
@@ -88,6 +91,8 @@ fn user_control_unknown_event_type() {
 fn insufficient_buffer_returns_none() {
     let mut decoder = RtmpMessageDecoder::default();
     decoder.feed_buf(&[0]);
-    let result = decoder.decode().unwrap();
+    let result = decoder
+        .decode()
+        .expect("decode must not fail for partial input");
     assert!(result.is_none());
 }

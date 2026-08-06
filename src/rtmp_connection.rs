@@ -318,7 +318,7 @@ mod tests {
                     stream_id: RtmpMessageStreamId::PCM,
                     timestamp: RtmpTimestamp::ZERO,
                 },
-                size: RtmpChunkSize::new(1).unwrap(),
+                size: RtmpChunkSize::new(1).expect("valid chunk size"),
             },
             RtmpMessage::Video {
                 header: RtmpMessageHeader {
@@ -361,7 +361,10 @@ mod tests {
         decoder.feed_buf(&buf);
 
         let mut decoded = Vec::new();
-        while let Some(message) = decoder.decode().unwrap() {
+        while let Some(message) = decoder
+            .decode()
+            .expect("decode must not fail for encoded message")
+        {
             decoded.push(message);
         }
 
