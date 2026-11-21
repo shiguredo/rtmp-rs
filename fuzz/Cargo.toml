@@ -7,8 +7,6 @@ publish = false
 [package.metadata]
 cargo-fuzz = true
 
-[workspace]
-
 [[bin]]
 bench = false
 doc = false
@@ -98,3 +96,5 @@ libfuzzer-sys = "0.4"
 
 [dependencies.shiguredo_rtmp]
 path = ".."
+
+[workspace]

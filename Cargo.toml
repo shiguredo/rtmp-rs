@@ -10,8 +10,8 @@ repository = "https://github.com/shiguredo/rtmp-rs"
 license = "Apache-2.0"
 include = ["/LICENSE", "/README.md", "/src/**"]
 
+[dependencies]
+
 [workspace]
 members = ["examples/publish", "examples/server", "pbt"]
 exclude = ["fuzz"]
-
-[dependencies]
