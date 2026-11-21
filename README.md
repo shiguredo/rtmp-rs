@@ -238,8 +238,8 @@ cargo run -p server -- --tls --cert cert.pem --key key.pem -p 443
 Apache License 2.0
 
 ```text
-Copyright 2026-2026, Takeru Ohta (Original Author)
-Copyright 2026-2026, Shiguredo Inc.
+Copyright 2026 Shiguredo Inc.
+Copyright 2026 Takeru Ohta (Original Author)
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
