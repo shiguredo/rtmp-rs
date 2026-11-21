@@ -238,6 +238,75 @@ fn clear_send_buf(server: &mut RtmpServerConnection) {
 // Flow テスト
 // =============================================================================
 
+/// C2 を受信するタイミングにかかわらず、S2 の残りと connect への応答を順に送信する。
+#[test]
+fn finishes_s2_even_if_c2_arrives_first() -> noprop::TestResult {
+    // Adobe RTMP 仕様（2012 年 12 月版）5.2.2～5.2.4 節の単純ハンドシェイクの長さ。
+    // その形式が変更された場合は、C2 の生成方法とともに見直す。
+    const PACKET_SIZE: usize = 1536;
+    const S2_START: usize = 1 + PACKET_SIZE;
+    let seed = noprop::seed_from_env_or_time(SEED_ENV)?;
+    noprop::Runner::new(seed).run(CASES, |ctx: &mut TestCaseContext| {
+        let partial_s2 = noprop::sample_usize_in(ctx, 1..PACKET_SIZE);
+        // 既定の C1 はゼロが並ぶため、乱数欄の末尾に値を入れて誤った部分列を区別する。
+        // 最後の 1 バイトだけ残っていても、S2 の正しい位置から返されたことが分かる。
+        let mut c0_c1 = RtmpClientHandshake::new().send_buf().to_vec();
+        c0_c1[S2_START - 1] = noprop::sample_u8_in(ctx, 1..=u8::MAX);
+        for s2_sent in [0, partial_s2, PACKET_SIZE] {
+            let mut server = RtmpServerConnection::new();
+            server
+                .feed_recv_buf(&c0_c1)
+                .expect("サーバーは C0 と C1 を受理するはず");
+            let handshake = server.send_buf().to_vec();
+            assert_eq!(handshake.len(), S2_START + PACKET_SIZE);
+            assert_eq!(
+                handshake.last(),
+                c0_c1.last(),
+                "S2 の乱数欄末尾は C1 と一致するはず"
+            );
+            let sent = S2_START + s2_sent;
+            server.advance_send_buf(sent);
+
+            // 本クレートのクライアントは S2 も待つため、5.2.1 節で許される早着順を
+            // 再現する C2 は実際の S1 から組み立てる。S1 を読んだ時刻は 0 とする。
+            let mut c2 = handshake[1..S2_START].to_vec();
+            c2[4..8].copy_from_slice(&0_u32.to_be_bytes());
+            server.feed_recv_buf(&c2).expect("有効な C2 を受理するはず");
+            assert_eq!(server.state(), RtmpConnectionState::Connecting);
+
+            // C2 の処理で受信状態が進んでも、送信側は残っている S2 を返し続ける。
+            let remaining = &handshake[sent..];
+            assert_eq!(
+                server.send_buf(),
+                remaining,
+                "S2 の未送信部分が一致するはず"
+            );
+            if !remaining.is_empty() {
+                server.advance_send_buf(remaining.len());
+            }
+            assert!(server.send_buf().is_empty(), "S2 はすべて送信済みのはず");
+
+            // どちらの順序でも、ハンドシェイクの後は応答チャンクを取得・消費できる。
+            send_command(
+                &mut server,
+                RtmpCommand::Connect(RtmpConnectCommand {
+                    app: "live".to_owned(),
+                    flash_ver: "FMLE/3.0".to_owned(),
+                    tc_url: "rtmp://example.invalid/live".to_owned(),
+                }),
+            )
+            .expect("connect を受理するはず");
+            assert_eq!(server.state(), RtmpConnectionState::Connected);
+            let len = server.send_buf().len();
+            assert!(len > 0, "connect の応答チャンクがあるはず");
+            server.advance_send_buf(len);
+            assert!(server.send_buf().is_empty(), "応答チャンクは送信済みのはず");
+        }
+        Ok(())
+    })?;
+    Ok(())
+}
+
 /// Connect で Connected に遷移することを検証する
 #[test]
 fn connect_flow() -> noprop::TestResult {
