@@ -12,7 +12,7 @@ use crate::rtmp_command::{
 use crate::rtmp_connection::{
     RtmpConnectionEvent, RtmpConnectionOptions, RtmpConnectionState, RtmpMessageChannel,
 };
-use crate::rtmp_handshake::RtmpServerHandshake;
+use crate::rtmp_handshake::{HANDSHAKE_BYTES, RtmpServerHandshake};
 use crate::rtmp_message::{RtmpMessage, RtmpMessageHeader, RtmpMessageStreamId};
 use crate::rtmp_timestamp::RtmpTimestamp;
 use crate::rtmp_user_control_event::RtmpUserControlEvent;
@@ -112,8 +112,10 @@ impl RtmpServerConnection {
             RtmpMessage::Ack {
                 sequence_number, ..
             } => {
-                // 相手から ACK を受け取ったことを通知
-                self.message_channel.notify_ack_received(sequence_number);
+                // ハンドシェイクの送信完了前は、送信待ちのチャンクを確認済みにしない。
+                if self.handshake.is_send_complete() {
+                    self.message_channel.notify_ack_received(sequence_number);
+                }
             }
             RtmpMessage::SetChunkSize { .. } => {
                 // message decoder のレイヤーでハンドリングされるのでここでは何もしなくていい
@@ -296,7 +298,12 @@ impl RtmpServerConnection {
     /// 送信バッファから指定バイト数を送信済みとしてマークする
     pub fn advance_send_buf(&mut self, n: usize) {
         if !self.handshake.is_send_complete() {
+            let had_pending_bytes = !self.handshake.send_buf().is_empty();
             self.handshake.advance_send_buf(n);
+            if had_pending_bytes && self.handshake.has_sent_handshake_bytes() {
+                self.message_channel
+                    .set_handshake_bytes_sent(HANDSHAKE_BYTES);
+            }
         } else if !self.message_channel.advance_send_buf(n) {
             // 相手から ACK が期待通りに届いていないので切断する
             self.event_queue
