@@ -288,7 +288,9 @@ impl RtmpServerConnection {
     /// クライアントへのデータ送信が成功した場合には、
     /// その送信バイト数を `RtmpServerConnection::advance_send_buf()` を呼び出して反映する必要がある
     pub fn send_buf(&self) -> &[u8] {
-        if self.state == RtmpConnectionState::Handshaking {
+        // Adobe RTMP 仕様（2012 年 12 月版）5.2.1 節では、S2 を送る前に C2 を受信できる。
+        // 送受信順の規定が変わる場合は、このバッファ選択を見直す。
+        if !self.handshake.is_send_complete() {
             self.handshake.send_buf()
         } else {
             self.message_channel.send_buf()
