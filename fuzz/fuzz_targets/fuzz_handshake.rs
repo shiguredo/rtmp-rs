@@ -1,4 +1,4 @@
-//! RTMP Handshake Fuzzing
+//! RTMP ハンドシェイクのファジング
 //!
 //! RTMP 仕様 Section 5.2: Handshake
 //!
@@ -8,7 +8,7 @@
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;
-use shiguredo_rtmp::tests::{RtmpClientHandshake, RtmpServerHandshake};
+use shiguredo_rtmp::rtmp_handshake::{RtmpClientHandshake, RtmpServerHandshake};
 
 fuzz_target!(|data: &[u8]| {
     // サーバー側ハンドシェイクのファジング

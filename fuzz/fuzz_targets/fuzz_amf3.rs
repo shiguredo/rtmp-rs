@@ -1,7 +1,7 @@
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;
-use shiguredo_rtmp::tests::{AmfValue, AmfVersion};
+use shiguredo_rtmp::amf::{AmfValue, AmfVersion};
 
 fuzz_target!(|data: &[u8]| {
     // AMF3 値のデコードを試みる

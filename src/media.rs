@@ -1,3 +1,5 @@
+//! RTMP で扱う音声フレーム・映像フレームとコーデック情報を提供するモジュール
+
 use alloc::vec::Vec;
 
 use crate::Error;
@@ -276,7 +278,7 @@ impl AvcSequenceHeader {
     /// - SPS/PPS のサイズが上限を超える場合
     pub fn from_bytes(data: &[u8]) -> Result<Self, Error> {
         // 最小バイト数: configVersion(1) + profile(1) + compat(1) + level(1) +
-        //              length_size(1) + numSPS(1) + numPPS(1) = 7 bytes
+        //              length_size(1) + numSPS(1) + numPPS(1) = 7 バイト
         if data.len() < 7 {
             return Err(Error::invalid_data(
                 "AVCDecoderConfigurationRecord too short (expected at least 7 bytes)",
@@ -520,8 +522,11 @@ mod tests {
             pps_list: vec![vec![0x04, 0x05]],
         };
 
-        let bytes = header.to_bytes().expect("to_bytes failed");
-        let parsed = AvcSequenceHeader::from_bytes(&bytes).expect("from_bytes failed");
+        let bytes = header
+            .to_bytes()
+            .expect("シーケンスヘッダーのエンコードに失敗した");
+        let parsed =
+            AvcSequenceHeader::from_bytes(&bytes).expect("シーケンスヘッダーのデコードに失敗した");
 
         assert_eq!(header, parsed);
     }
@@ -550,8 +555,11 @@ mod tests {
             pps_list: vec![vec![7, 8], vec![9, 10]],
         };
 
-        let bytes = header.to_bytes().expect("to_bytes failed");
-        let parsed = AvcSequenceHeader::from_bytes(&bytes).expect("from_bytes failed");
+        let bytes = header
+            .to_bytes()
+            .expect("シーケンスヘッダーのエンコードに失敗した");
+        let parsed =
+            AvcSequenceHeader::from_bytes(&bytes).expect("シーケンスヘッダーのデコードに失敗した");
 
         assert_eq!(header, parsed);
     }

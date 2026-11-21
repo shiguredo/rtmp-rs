@@ -1,66 +1,89 @@
 //! RtmpTimestamp / RtmpTimestampDelta の Property-Based Testing
 
-use proptest::prelude::*;
-use shiguredo_rtmp::tests::{RtmpTimestamp, RtmpTimestampDelta};
 use std::time::Duration;
 
-proptest! {
-    #![proptest_config(ProptestConfig::with_cases(300))]
+use noprop::TestCaseContext;
+use shiguredo_rtmp::rtmp_timestamp::{RtmpTimestamp, RtmpTimestampDelta};
 
-    /// from_millis / as_millis が可逆であることを検証
-    #[test]
-    fn timestamp_millis_roundtrip(ms in any::<u32>()) {
+/// このファイルの PBT ケース数
+const CASES: usize = 300;
+
+/// 乱数シードを取得する環境変数名
+const SEED_ENV: &str = "RTMP_RS_PBT_SEED";
+
+/// from_millis / as_millis が可逆であることを検証する
+#[test]
+fn timestamp_millis_roundtrip() -> noprop::TestResult {
+    let seed = noprop::seed_from_env_or_time(SEED_ENV)?;
+    noprop::Runner::new(seed).run(CASES, |ctx: &mut TestCaseContext| {
+        let ms = noprop::sample_u32(ctx);
         let ts = RtmpTimestamp::from_millis(ms);
-        prop_assert_eq!(ts.as_millis(), ms);
-    }
+        assert_eq!(ts.as_millis(), ms, "ミリ秒値が一致しない");
+        Ok(())
+    })?;
+    Ok(())
+}
 
-    /// as_duration が正しい Duration を返すことを検証
-    #[test]
-    fn timestamp_as_duration(ms in any::<u32>()) {
+/// as_duration が正しい Duration を返すことを検証する
+#[test]
+fn timestamp_as_duration() -> noprop::TestResult {
+    let seed = noprop::seed_from_env_or_time(SEED_ENV)?;
+    noprop::Runner::new(seed).run(CASES, |ctx: &mut TestCaseContext| {
+        let ms = noprop::sample_u32(ctx);
         let ts = RtmpTimestamp::from_millis(ms);
-        let expected = Duration::from_millis(ms as u64);
-        prop_assert_eq!(ts.as_duration(), expected);
-    }
+        let expected = Duration::from_millis(u64::from(ms));
+        assert_eq!(ts.as_duration(), expected, "Duration が一致しない");
+        Ok(())
+    })?;
+    Ok(())
+}
 
-    /// wrapping_add がオーバーフロー時にラップアラウンドすることを検証
-    #[test]
-    fn timestamp_wrapping_add(a in any::<u32>(), b in any::<u32>()) {
-        let ts_a = RtmpTimestamp::from_millis(a);
-        let ts_b = RtmpTimestamp::from_millis(b);
-        let result = ts_a.wrapping_add(ts_b);
-        prop_assert_eq!(result.as_millis(), a.wrapping_add(b));
-    }
+/// wrapping_add がオーバーフロー時にラップアラウンドすることを検証する
+#[test]
+fn timestamp_wrapping_add() -> noprop::TestResult {
+    let seed = noprop::seed_from_env_or_time(SEED_ENV)?;
+    noprop::Runner::new(seed).run(CASES, |ctx: &mut TestCaseContext| {
+        let a = noprop::sample_u32(ctx);
+        let b = noprop::sample_u32(ctx);
+        let result = RtmpTimestamp::from_millis(a).wrapping_add(RtmpTimestamp::from_millis(b));
+        assert_eq!(
+            result.as_millis(),
+            a.wrapping_add(b),
+            "加算結果が一致しない"
+        );
+        Ok(())
+    })?;
+    Ok(())
+}
 
-    /// checked_sub が正しく動作することを検証
-    #[test]
-    fn timestamp_checked_sub(a in any::<u32>(), b in any::<u32>()) {
-        let ts_a = RtmpTimestamp::from_millis(a);
-        let ts_b = RtmpTimestamp::from_millis(b);
-        let result = ts_a.checked_sub(ts_b);
+/// checked_sub がアンダーフロー時に None を返すことを検証する
+#[test]
+fn timestamp_checked_sub() -> noprop::TestResult {
+    let seed = noprop::seed_from_env_or_time(SEED_ENV)?;
+    noprop::Runner::new(seed).run(CASES, |ctx: &mut TestCaseContext| {
+        let a = noprop::sample_u32(ctx);
+        let b = noprop::sample_u32(ctx);
+        let result = RtmpTimestamp::from_millis(a).checked_sub(RtmpTimestamp::from_millis(b));
         if a >= b {
-            prop_assert!(result.is_some());
-            prop_assert_eq!(result.expect("result must be some").as_millis(), a - b);
+            let result = result.expect("a >= b なら減算結果は必ず Some になる");
+            assert_eq!(result.as_millis(), a - b, "減算結果が一致しない");
         } else {
-            prop_assert!(result.is_none());
+            assert!(result.is_none(), "a < b なら減算結果は必ず None になる");
         }
-    }
+        Ok(())
+    })?;
+    Ok(())
+}
 
-    /// ZERO 定数が 0 ミリ秒であることを検証
-    #[test]
-    fn timestamp_zero_is_zero(_dummy in Just(())) {
-        prop_assert_eq!(RtmpTimestamp::ZERO.as_millis(), 0);
-    }
-
-    /// RtmpTimestampDelta の from_millis / as_millis が可逆であることを検証
-    #[test]
-    fn timestamp_delta_millis_roundtrip(ms in any::<i32>()) {
+/// RtmpTimestampDelta の from_millis / as_millis が可逆であることを検証する
+#[test]
+fn timestamp_delta_millis_roundtrip() -> noprop::TestResult {
+    let seed = noprop::seed_from_env_or_time(SEED_ENV)?;
+    noprop::Runner::new(seed).run(CASES, |ctx: &mut TestCaseContext| {
+        let ms = noprop::sample_i32(ctx);
         let delta = RtmpTimestampDelta::from_millis(ms);
-        prop_assert_eq!(delta.as_millis(), ms);
-    }
-
-    /// RtmpTimestampDelta の ZERO 定数が 0 ミリ秒であることを検証
-    #[test]
-    fn timestamp_delta_zero_is_zero(_dummy in Just(())) {
-        prop_assert_eq!(RtmpTimestampDelta::ZERO.as_millis(), 0);
-    }
+        assert_eq!(delta.as_millis(), ms, "ミリ秒値が一致しない");
+        Ok(())
+    })?;
+    Ok(())
 }

@@ -29,13 +29,11 @@ Rust で実装された依存 0 かつ `no_std` に対応した Sans I/O な RTM
 ### クライアント (配信)
 
 ```rust
-use shiguredo_rtmp::{RtmpPublishClientConnection, VideoFrame, AudioFrame};
+use shiguredo_rtmp::{RtmpPublishClientConnection, RtmpUrl};
 
 // 配信用クライアント接続を作成
-let mut connection = RtmpPublishClientConnection::new(
-    "rtmp://localhost:1935/live",
-    "stream"
-);
+let url = RtmpUrl::parse("rtmp://localhost:1935/live/stream")?;
+let mut connection = RtmpPublishClientConnection::new(url);
 
 // 送信バッファを取得してソケットに書き込む
 let send_data = connection.send_buf();
@@ -56,13 +54,11 @@ connection.advance_send_buf(send_data.len());
 ### クライアント (再生)
 
 ```rust
-use shiguredo_rtmp::RtmpPlayClientConnection;
+use shiguredo_rtmp::{RtmpPlayClientConnection, RtmpUrl};
 
 // 再生用クライアント接続を作成
-let mut connection = RtmpPlayClientConnection::new(
-    "rtmp://localhost:1935/live",
-    "stream"
-);
+let url = RtmpUrl::parse("rtmp://localhost:1935/live/stream")?;
+let mut connection = RtmpPlayClientConnection::new(url);
 
 // 送信バッファを取得してソケットに書き込む
 let send_data = connection.send_buf();
@@ -117,6 +113,31 @@ connection.advance_send_buf(send_data.len());
 
 ## 公開 API
 
+### モジュール構成
+
+| モジュール | 説明 |
+|------------|------|
+| `amf` | AMF0 / AMF3 の共通表現 |
+| `amf0` | AMF0 のエンコード / デコード |
+| `amf3` | AMF3 のエンコード / デコード |
+| `error` | エラー型 |
+| `flv` | FLV 形式の音声 / 映像フレームの変換 |
+| `media` | 音声フレーム / 映像フレームとコーデック情報 |
+| `rtmp_chunk` | チャンクストリーム ID / チャンクサイズ / チャンク |
+| `rtmp_chunk_decoder` | チャンクのデコード |
+| `rtmp_chunk_encoder` | チャンクのエンコード |
+| `rtmp_client_connection` | 配信 / 再生クライアント接続 |
+| `rtmp_command` | RTMP コマンド |
+| `rtmp_connection` | 接続状態 / イベント / メッセージチャネル |
+| `rtmp_handshake` | ハンドシェイク |
+| `rtmp_message` | RTMP メッセージ |
+| `rtmp_message_decoder` | RTMP メッセージのデコード |
+| `rtmp_message_encoder` | RTMP メッセージのエンコード |
+| `rtmp_server_connection` | サーバー接続 |
+| `rtmp_timestamp` | タイムスタンプ / タイムスタンプ差分 |
+| `rtmp_url` | RTMP URL の解析 |
+| `rtmp_user_control_event` | ユーザーコントロールイベント |
+
 ### 接続
 
 | 構造体 | 説明 |
@@ -124,6 +145,8 @@ connection.advance_send_buf(send_data.len());
 | `RtmpPublishClientConnection` | 配信用クライアント接続 |
 | `RtmpPlayClientConnection` | 再生用クライアント接続 |
 | `RtmpServerConnection` | サーバー接続 |
+| `RtmpUrl` | RTMP URL |
+| `RtmpConnectionOptions` | 接続オプション |
 
 ### イベント
 
@@ -144,6 +167,7 @@ connection.advance_send_buf(send_data.len());
 | `AudioFormat` | 音声フォーマット |
 | `AudioSampleRate` | 音声サンプルレート |
 | `AvcPacketType` | AVC パケットタイプ |
+| `AvcSequenceHeader` | AVC デコーダ設定データ |
 
 ### タイムスタンプ
 

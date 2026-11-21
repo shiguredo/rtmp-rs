@@ -1,3 +1,8 @@
+//! RTMP のチャンクをバイト列にエンコードするモジュール
+//!
+//! RTMP 仕様 5.3 節のチャンク形式に従い、メッセージをチャンクサイズごとに分割して書き出す
+//! エンコーダーを提供する。
+
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
 
@@ -6,6 +11,12 @@ use crate::rtmp_chunk::{MessageHeaderFormat, RtmpChunk, RtmpChunkSize, RtmpChunk
 use crate::rtmp_message::{RtmpMessageStreamId, RtmpMessageType};
 use crate::rtmp_timestamp::RtmpTimestamp;
 
+/// RTMP のチャンクをエンコードするエンコーダー
+///
+/// チャンクストリームごとに直前のメッセージのヘッダー情報を保持し、
+/// 差分のみを送信できる形式 1 から形式 3 のチャンクを選択して出力する。
+/// `Default` 実装で作成した場合、チャンクサイズは RTMP 仕様 5.4.1 節の既定値である
+/// 128 バイトになる。
 #[derive(Debug, Default)]
 pub struct RtmpChunkEncoder {
     chunk_size: RtmpChunkSize,
@@ -13,10 +24,19 @@ pub struct RtmpChunkEncoder {
 }
 
 impl RtmpChunkEncoder {
+    /// 以降のエンコードで使用するチャンクサイズを設定する
+    ///
+    /// 設定を変更する場合は、Set Chunk Size メッセージ（RTMP 仕様 5.4.1 節）を
+    /// 送信した後に呼び出す。既定値は 128 バイト。
     pub fn set_chunk_size(&mut self, size: RtmpChunkSize) {
         self.chunk_size = size;
     }
 
+    /// 1 メッセージをチャンクに分割してバッファーの末尾に追加する
+    ///
+    /// メッセージのペイロードは、現在のチャンクサイズごとに分割される。
+    /// 同じチャンクストリームで直前にエンコードしたメッセージとの差分に応じて、
+    /// 形式 0 から形式 3 のうちメッセージヘッダーが最も小さい形式が選ばれる。
     pub fn encode(&mut self, buf: &mut Vec<u8>, chunk: &RtmpChunk) {
         let mut chunk_stream = self.resolve_chunk_stream(chunk);
         self.encode_message(buf, &mut chunk_stream, &chunk.payload);
@@ -90,7 +110,7 @@ impl RtmpChunkEncoder {
                 }
                 buf.write_u24(chunk_stream.message_size as u32);
                 buf.write_u8(chunk_stream.message_type as u8);
-                buf.write_u32(chunk_stream.message_stream_id.get().swap_bytes()); // little endian
+                buf.write_u32(chunk_stream.message_stream_id.get().swap_bytes()); // リトルエンディアン
                 if is_extended {
                     buf.write_u32(timestamp);
                 }
@@ -196,7 +216,7 @@ impl RtmpChunkEncoder {
 struct RtmpChunkStream {
     pub chunk_stream_id: RtmpChunkStreamId,
     timestamp: RtmpTimestamp,
-    timestamp_delta: RtmpTimestamp, // [NOTE] ここでは負数は扱わないので RtmpTimestampDelta は使わない
+    timestamp_delta: RtmpTimestamp, // [補足] ここでは負数は扱わないので RtmpTimestampDelta は使わない
     message_type: RtmpMessageType,
     message_stream_id: RtmpMessageStreamId,
     message_size: usize,
@@ -362,7 +382,7 @@ mod tests {
 
     #[test]
     fn encode_extended_timestamp_boundary_fmt0_to_fmt3() {
-        // Test case 1: exactly 0xFFFFFF
+        // テストケース 1: ちょうど 0xFFFFFF
         let timestamp0 = 0xFFFFFFu32;
         let chunk0_0 = RtmpChunk {
             timestamp: RtmpTimestamp::from_millis(timestamp0),
@@ -380,7 +400,7 @@ mod tests {
         let encoded0 = encode_chunks(RtmpChunkEncoder::default(), &[chunk0_0, chunk0_1]);
         assert_eq!(encoded0, expected0);
 
-        // Test case 2: 0xFFFFFF - 1
+        // テストケース 2: 0xFFFFFF - 1
         let timestamp1 = 0xFFFFFEu32;
         let chunk1_0 = RtmpChunk {
             timestamp: RtmpTimestamp::from_millis(timestamp1),
@@ -394,7 +414,7 @@ mod tests {
         let encoded1 = encode_chunks(RtmpChunkEncoder::default(), &[chunk1_0, chunk1_1]);
         assert_eq!(encoded1, expected1);
 
-        // Test case 3: 0xFFFFFF + 1
+        // テストケース 3: 0xFFFFFF + 1
         let timestamp2 = 0x1000000u32;
         let chunk2_0 = RtmpChunk {
             timestamp: RtmpTimestamp::from_millis(timestamp2),
@@ -450,7 +470,7 @@ mod tests {
     fn encode_extended_timestamp_boundary_fmt0_to_fmt1_to_fmt3() {
         let timestamp_base = 300u32;
 
-        // Test case 1: exactly 0xFFFFFF
+        // テストケース 1: ちょうど 0xFFFFFF
         let timestamp_delta0 = 0xFFFFFFu32;
         let chunk0_0 = RtmpChunk {
             timestamp: RtmpTimestamp::from_millis(timestamp_base),
@@ -478,7 +498,7 @@ mod tests {
         let encoded0 = encode_chunks(RtmpChunkEncoder::default(), &[chunk0_0, chunk0_1, chunk0_2]);
         assert_eq!(encoded0, expected0);
 
-        // Test case 2: 0xFFFFFF - 1
+        // テストケース 2: 0xFFFFFF - 1
         let timestamp_delta1 = 0xFFFFFEu32;
         let chunk1_0 = RtmpChunk {
             timestamp: RtmpTimestamp::from_millis(timestamp_base),
@@ -506,7 +526,7 @@ mod tests {
         let encoded1 = encode_chunks(RtmpChunkEncoder::default(), &[chunk1_0, chunk1_1, chunk1_2]);
         assert_eq!(encoded1, expected1);
 
-        // Test case 3: 0xFFFFFF + 1
+        // テストケース 3: 0xFFFFFF + 1
         let timestamp_delta2 = 0x1000000u32;
         let chunk2_0 = RtmpChunk {
             timestamp: RtmpTimestamp::from_millis(timestamp_base),
@@ -541,7 +561,8 @@ mod tests {
         // リトルエンディアン: 0x00, 0x01
         // ビッグエンディアン（間違い）: 0x01, 0x00
         let chunk = RtmpChunk {
-            chunk_stream_id: RtmpChunkStreamId::new(320).expect("infallible"),
+            chunk_stream_id: RtmpChunkStreamId::new(320)
+                .expect("有効なチャンクストリーム ID であるはず"),
             ..input_chunk()
         };
 
@@ -561,7 +582,8 @@ mod tests {
         // チャンク ID 65599 は (65599 - 64) = 65535 = 0xFFFF としてエンコードされる
         // リトルエンディアン: 0xFF, 0xFF
         let chunk = RtmpChunk {
-            chunk_stream_id: RtmpChunkStreamId::new(65599).expect("infallible"),
+            chunk_stream_id: RtmpChunkStreamId::new(65599)
+                .expect("有効なチャンクストリーム ID であるはず"),
             ..input_chunk()
         };
 
@@ -578,7 +600,8 @@ mod tests {
 
     fn input_chunk() -> RtmpChunk {
         RtmpChunk {
-            chunk_stream_id: RtmpChunkStreamId::new(4).expect("infallible"),
+            chunk_stream_id: RtmpChunkStreamId::new(4)
+                .expect("有効なチャンクストリーム ID であるはず"),
             message_stream_id: RtmpMessageStreamId::new(2),
             message_type: RtmpMessageType::Ack,
             timestamp: RtmpTimestamp::from_millis(300),

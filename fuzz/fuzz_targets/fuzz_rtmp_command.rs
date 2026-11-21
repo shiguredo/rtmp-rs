@@ -1,11 +1,12 @@
-//! RTMP Command Fuzzing
+//! RTMP コマンドのファジング
 //!
 //! RTMP コマンドのパースをファジングする。
 
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;
-use shiguredo_rtmp::tests::{AmfValue, AmfVersion, RtmpCommand, TransactionId};
+use shiguredo_rtmp::amf::{AmfValue, AmfVersion};
+use shiguredo_rtmp::rtmp_command::{RtmpCommand, TransactionId};
 
 fuzz_target!(|data: &[u8]| {
     // 入力バイト列全体を AMF0 値として連続デコードし、最初の値を object、2 番目以降を args とする

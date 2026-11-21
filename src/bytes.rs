@@ -1,8 +1,14 @@
+//! バイト列の読み書きを補助する内部モジュール
+
 use alloc::string::String;
 use alloc::vec::Vec;
 
 use crate::error::Error;
 
+// [補足]
+// バイト列の読み書きは &[u8] と Vec<u8> の両方に同じ操作を提供する必要があり、
+// 固有メソッドにすると実装が重複して保守しづらくなるため、
+// 規約上の例外としてトレイトで実装している
 pub trait BytesReader {
     fn read_u8(&mut self) -> Result<u8, Error>;
     fn read_u16(&mut self) -> Result<u16, Error>;
@@ -181,6 +187,8 @@ impl BytesReader for Vec<u8> {
     }
 }
 
+// [補足]
+// BytesReader と同じ理由で、Vec<u8> への書き込み操作をトレイトで実装している
 pub trait BytesWriter {
     fn write_u8(&mut self, v: u8);
     fn write_u16(&mut self, v: u16);
@@ -258,7 +266,7 @@ impl Buf {
         }
     }
 
-    // [NOTE]
+    // [補足]
     // 呼び出しが `Buf::get().len()` よりも大きい値を n に指定した場合には、
     // 後続の処理でパニックなどをする可能性がある
     // （`Buf` は内部的な構造体なので、このメソッドを正しく使うのは呼び出し元の責務として、ここではエラーチェックをしていない）
@@ -266,7 +274,7 @@ impl Buf {
         self.offset += n;
         if self.offset == self.bytes.len() {
             self.offset = 0;
-            self.bytes.clear(); // [NOTE] bytes 自体の capacity は変わらない
+            self.bytes.clear(); // [補足] bytes 自体の capacity は変わらない
         }
     }
 }

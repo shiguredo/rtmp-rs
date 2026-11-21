@@ -1,10 +1,11 @@
+//! RTMP ライブラリのエラー型を提供するモジュール
+
 use alloc::string::String;
 use core::fmt;
 use core::panic::Location;
 
 /// エラーの種類
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-#[non_exhaustive]
 pub enum ErrorKind {
     /// 入力パラメーターの形式または構造が無効である
     InvalidInput,

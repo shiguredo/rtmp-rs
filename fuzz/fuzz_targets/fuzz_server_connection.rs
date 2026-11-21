@@ -1,4 +1,4 @@
-//! RTMP Server Connection Fuzzing
+//! RTMP サーバー接続のファジング
 //!
 //! RTMP サーバー接続の受信データ処理をファジングする。
 

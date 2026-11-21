@@ -11,10 +11,22 @@
 
 ## develop
 
-- [CHANGE] MSRV (rust-version) を 1.93 に上げる
+- [CHANGE] MSRV (rust-version) を 1.95 に上げる
+  - @voluntas
+
+- [ADD] RTMP の各要素をモジュールとして公開 API に追加する
+  - @voluntas
+
+- [UPDATE] `ErrorKind` から `#[non_exhaustive]` を削除する
   - @voluntas
 
 ### misc
 
-- [UPDATE] shiguredo-rust スキル規約に合わせて整備する
+- [UPDATE] PBT を proptest から noprop に移行する
+  - @voluntas
+
+- [UPDATE] テスト専用の `tests` モジュールを廃止し、テストを公開 API 経由に変更する
+  - @voluntas
+
+- [UPDATE] CI のツールチェーンを `rust-toolchain.toml` の MSRV に揃える
   - @voluntas

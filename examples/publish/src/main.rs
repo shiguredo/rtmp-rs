@@ -458,15 +458,15 @@ fn validate_codecs(demuxer: &mut Mp4FileDemuxer) -> noargs::Result<HashSet<u32>>
         if let Some(sample_entry) = sample.sample_entry {
             match sample_entry {
                 shiguredo_mp4::boxes::SampleEntry::Avc1(_) => {
-                    println!("✓ Track {} - Found H.264 video codec", track_id);
+                    println!("[OK] Track {} - Found H.264 video codec", track_id);
                     publishable_track_ids.insert(track_id);
                 }
                 shiguredo_mp4::boxes::SampleEntry::Mp4a(_) => {
-                    println!("✓ Track {} - Found AAC audio codec", track_id);
+                    println!("[OK] Track {} - Found AAC audio codec", track_id);
                     publishable_track_ids.insert(track_id);
                 }
                 other => {
-                    println!("⚠ Track {} - Unsupported codec: {other:?}", track_id);
+                    println!("[WARN] Track {} - Unsupported codec: {other:?}", track_id);
                 }
             }
         }

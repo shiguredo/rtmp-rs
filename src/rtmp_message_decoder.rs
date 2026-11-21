@@ -1,3 +1,5 @@
+//! RTMP のチャンクストリームをメッセージへデコードするデコーダーを提供するモジュール
+
 use alloc::borrow::ToOwned;
 use alloc::vec::Vec;
 
@@ -12,6 +14,11 @@ use crate::rtmp_message::{
 };
 use crate::rtmp_user_control_event::RtmpUserControlEvent;
 
+/// RTMP メッセージのデコーダー
+///
+/// 受信したバイト列を [`RtmpMessageDecoder::feed_buf`] で投入し、
+/// [`RtmpMessageDecoder::decode`] でメッセージを 1 つずつ取り出す。
+/// 分割されたチャンクの再結合は内部で行う。
 #[derive(Debug, Default)]
 pub struct RtmpMessageDecoder {
     chunk_decoder: RtmpChunkDecoder,
@@ -19,10 +26,29 @@ pub struct RtmpMessageDecoder {
 }
 
 impl RtmpMessageDecoder {
+    /// 受信したバイト列を内部バッファに追加する
+    ///
+    /// このメソッドはバッファへの追加のみを行う。メッセージの取り出しは
+    /// [`RtmpMessageDecoder::decode`] で行う。
     pub fn feed_buf(&mut self, buf: &[u8]) {
         self.buf.feed(buf);
     }
 
+    /// 次に受信したメッセージを取り出す
+    ///
+    /// 返り値は次のとおりである。
+    ///
+    /// - メッセージを取得できた場合は `Ok(Some(message))`
+    /// - メッセージを組み立てるだけのデータがまだ揃っていない場合は `Ok(None)`
+    /// - デコードに失敗した場合は `Err(error)`
+    ///
+    /// `Ok(None)` が返った場合は、続きのバイト列を
+    /// [`RtmpMessageDecoder::feed_buf`] で追加してから再度呼び出す。
+    ///
+    /// Set Chunk Size メッセージをデコードした場合は、続くチャンクの解釈に
+    /// 反映するためチャンクサイズを更新する（RTMP 仕様 5.4.1 節）。
+    /// Abort メッセージをデコードした場合は、対象のチャンクストリームの状態を
+    /// リセットする（RTMP 仕様 5.4.2 節）。
     pub fn decode(&mut self) -> Result<Option<RtmpMessage>, Error> {
         loop {
             let chunk = match self.chunk_decoder.decode(self.buf.get()) {

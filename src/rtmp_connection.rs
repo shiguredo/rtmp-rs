@@ -1,3 +1,6 @@
+//! RTMP コネクションの状態・イベント・オプションと、メッセージ送受信チャネルを提供するモジュール
+//! ACK の管理は RTMP 仕様 5.3.3 節と 5.3.4 節に従う。
+
 use alloc::borrow::ToOwned;
 use alloc::collections::VecDeque;
 use alloc::string::String;
@@ -203,6 +206,11 @@ impl fmt::Display for RtmpConnectionState {
     }
 }
 
+/// RTMP のメッセージをチャンクに変換して送受信するチャネル
+///
+/// エンコーダーとデコーダーを内部に持ち、送信用バッファと受信済みメッセージのキューを
+/// 管理する。RTMP 仕様 5.3.3 節の ACK と 5.3.4 節のウィンドウサイズに基づいて、
+/// ACK の送信タイミングと、相手からの ACK が途絶えた場合の検出も行う。
 #[derive(Debug, Default)]
 pub struct RtmpMessageChannel {
     decoder: RtmpMessageDecoder,
@@ -210,22 +218,26 @@ pub struct RtmpMessageChannel {
     decoded_messages: VecDeque<RtmpMessage>,
     send_buf: Buf,
 
-    // ACK ハンドリング用のフィールド群
-    // 32 bit で表現しているのは RTMP 仕様に合わせているため
+    // ACK の管理用のフィールド群
+    // 32 ビットで表現しているのは RTMP 仕様に合わせているため
 
-    // [NOTE]
-    // 受信側は last_ack_sent が total_bytes_received と peer_ack_window_size 以上乖離する前に次の ack を送る必要がある
+    // [補足]
+    // 受信側は last_ack_sent が total_bytes_received と peer_ack_window_size 以上乖離する前に次の ACK を送る必要がある
     // （送信側の場合はその逆）
     peer_ack_window_size: u32,
     total_bytes_received: u32, // 累計受信バイト数
-    last_ack_sent: u32,        // 最後に ack を送ったバイト地点
+    last_ack_sent: u32,        // 最後に ACK を送ったバイト地点
 
     local_ack_window_size: u32,
     total_bytes_sent: u32,  // 累計送信バイト数
-    last_ack_received: u32, // 最後に ack を受け取ったバイト地点
+    last_ack_received: u32, // 最後に ACK を受け取ったバイト地点
 }
 
 impl RtmpMessageChannel {
+    /// 受信したバイト列をデコーダーに渡し、デコード済みのメッセージを内部キューに追加する
+    ///
+    /// ACK を送信する必要がある場合は、その時点の累計受信バイト数を `Some` で返す。
+    /// デコードに失敗した場合は [`Error`] を返す。
     pub fn feed_recv_buf(&mut self, buf: &[u8]) -> Result<Option<u32>, Error> {
         self.decoder.feed_buf(buf);
         self.total_bytes_received = self.total_bytes_received.wrapping_add(buf.len() as u32);
@@ -251,45 +263,68 @@ impl RtmpMessageChannel {
         }
     }
 
+    /// 送信待ちのチャンクデータを取得する
     pub fn send_buf(&self) -> &[u8] {
         self.send_buf.get()
     }
 
+    /// 送信済みの `n` バイトを送信バッファから消費する
+    ///
+    /// 相手からの ACK が想定よりも遅れている場合は `false` を返す。
+    /// `false` が返された場合、呼び出し側は送信を止めるか接続を切断するなどの対処をする必要がある。
     pub fn advance_send_buf(&mut self, n: usize) -> bool {
         self.total_bytes_sent = self.total_bytes_sent.wrapping_add(n as u32);
         self.send_buf.advance(n);
 
         let unacked_bytes = self.total_bytes_sent.wrapping_sub(self.last_ack_received);
         if unacked_bytes > self.local_ack_window_size * 2 {
-            // 必要な間隔で相手から ACK が送られて来ていない（* 2 は念のために若干のバッファを持たせている）
+            // 必要な間隔で相手から ACK が送られて来ていない（2 倍にしているのは念のために若干のバッファを持たせているため）
             //
-            // 呼び出し元で、送信を止めるなり、切断するなりの対処が必要
+            // 呼び出し元で、送信を止めるか、接続を切断するなどの対処が必要
             false
         } else {
             true
         }
     }
 
+    /// デコード済みのメッセージを 1 つ取り出す
+    ///
+    /// キューが空の場合は `None` を返す。
     pub fn next_recv_message(&mut self) -> Option<RtmpMessage> {
         self.decoded_messages.pop_front()
     }
 
+    /// メッセージをチャンクにエンコードして送信バッファの末尾に追加する
+    ///
+    /// メッセージのストリーム ID に対応するチャンクストリーム ID が使用される。
     pub fn feed_send_message(&mut self, message: RtmpMessage) {
         let chunk_stream_id = RtmpChunkStreamId::from_message_stream_id(message.header().stream_id);
         self.encoder
             .encode(self.send_buf.inner_mut(), chunk_stream_id, message);
     }
 
+    /// 自身の ACK ウィンドウサイズを設定する
+    ///
+    /// 送信時に、このサイズの 2 倍を超える未 ACK バイトが発生すると
+    /// [`Self::advance_send_buf()`] が `false` を返す。
     pub fn set_local_ack_window_size(&mut self, size: u32) {
         self.local_ack_window_size = size;
     }
 
+    /// 相手の ACK ウィンドウサイズを設定する
+    ///
+    /// 受信時に、このサイズの半分を超える未 ACK バイトが発生すると
+    /// [`Self::feed_recv_buf()`] が ACK を送信するための値を返す。
     pub fn set_peer_ack_window_size(&mut self, size: u32) {
         self.peer_ack_window_size = size;
     }
 
-    // 相手から送られてきた ACK の情報で更新する
+    /// 相手から受信した ACK の累計受信バイト数を記録する
+    ///
+    /// `acked_bytes` は相手が通知してきた累計受信バイト数であり、次回以降の
+    /// 未 ACK バイト数の計算に使用される。
     pub fn notify_ack_received(&mut self, acked_bytes: u32) {
+        // 相手から送られてきた ACK の情報で更新する
         self.last_ack_received = acked_bytes;
     }
 }
@@ -311,14 +346,13 @@ mod tests {
     #[test]
     fn message_channel_send_roundtrip_regression_pbt() {
         // PBT で観測した最新の最小ケースを単体テスト化
-        // proptest-regressions: e00fb29aad1ea669d11ef622d70b499d650a9750e1b912e1eefb257471e55e60
         let messages = vec![
             RtmpMessage::SetChunkSize {
                 header: RtmpMessageHeader {
                     stream_id: RtmpMessageStreamId::PCM,
                     timestamp: RtmpTimestamp::ZERO,
                 },
-                size: RtmpChunkSize::new(1).expect("valid chunk size"),
+                size: RtmpChunkSize::new(1).expect("チャンクサイズは有効な値であるはず"),
             },
             RtmpMessage::Video {
                 header: RtmpMessageHeader {
@@ -363,7 +397,7 @@ mod tests {
         let mut decoded = Vec::new();
         while let Some(message) = decoder
             .decode()
-            .expect("decode must not fail for encoded message")
+            .expect("エンコード済みメッセージのデコードは失敗しないはず")
         {
             decoded.push(message);
         }

@@ -2,703 +2,849 @@
 //!
 //! RTMP 仕様に基づいた RTMP Message のエンコード/デコード roundtrip テストを行う。
 //!
-//! 参照: rtmp_specification_1.0.md
-//! - Section 5.4: Protocol Control Messages (Type 1-6)
-//! - Section 6.2: User Control Messages (Type 4)
-//! - Section 7.1: Types of Messages
+//! 参照: RTMP Specification 1.0
+//! - RTMP 仕様 5.4 節: Protocol Control メッセージ (種別 1-6)
+//! - RTMP 仕様 6.2 節: User Control メッセージ (種別 4)
+//! - RTMP 仕様 7.1 節: メッセージの種別
 
-use proptest::collection::vec;
-use proptest::prelude::*;
-use shiguredo_rtmp::tests::{
-    Amf0Value, Amf3Value, AmfValue, AmfVersion, Pair, RtmpChunkSize, RtmpChunkStreamId,
-    RtmpMessage, RtmpMessageDecoder, RtmpMessageEncoder, RtmpMessageHeader, RtmpMessageStreamId,
-    RtmpTimestamp, RtmpTimestampDelta, RtmpUserControlEvent, SetPeerBandwidthLimitType,
-    TransactionId,
-};
-use shiguredo_rtmp::{
+use std::ops::RangeBounds;
+
+use noprop::TestCaseContext;
+use shiguredo_rtmp::amf::{AmfValue, AmfVersion, Pair};
+use shiguredo_rtmp::amf0::Amf0Value;
+use shiguredo_rtmp::amf3::Amf3Value;
+use shiguredo_rtmp::media::{
     AudioFormat, AudioFrame, AudioSampleRate, AvcPacketType, VideoCodec, VideoFrame, VideoFrameType,
 };
+use shiguredo_rtmp::rtmp_chunk::{RtmpChunkSize, RtmpChunkStreamId};
+use shiguredo_rtmp::rtmp_command::TransactionId;
+use shiguredo_rtmp::rtmp_message::{
+    RtmpMessage, RtmpMessageHeader, RtmpMessageStreamId, SetPeerBandwidthLimitType,
+};
+use shiguredo_rtmp::rtmp_message_decoder::RtmpMessageDecoder;
+use shiguredo_rtmp::rtmp_message_encoder::RtmpMessageEncoder;
+use shiguredo_rtmp::rtmp_timestamp::{RtmpTimestamp, RtmpTimestampDelta};
+use shiguredo_rtmp::rtmp_user_control_event::RtmpUserControlEvent;
+
+/// このファイルの roundtrip テストの PBT ケース数
+const CASES: usize = 500;
+
+/// 境界値テストの PBT ケース数
+const BOUNDARY_CASES: usize = 100;
+
+/// 乱数シードを取得する環境変数名
+const SEED_ENV: &str = "RTMP_RS_PBT_SEED";
+
+/// AMF のキーに使う英字の文字プール
+const ALPHABETIC_CHARS: &[u8] = b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
+
+/// AMF の文字列値に使う英数字の文字プール
+const ALPHANUMERIC_CHARS: &[u8] = b"0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
 
 // =============================================================================
-// Strategy 定義
+// サンプラー定義
 // =============================================================================
 
-/// RtmpMessageHeader を生成する Strategy
-fn arb_message_header() -> impl Strategy<Value = RtmpMessageHeader> {
-    // RTMP 仕様: タイムスタンプは 32-bit (最大 0xFFFFFFFF ミリ秒)
-    (any::<u32>(), any::<u32>()).prop_map(|(stream_id, timestamp_ms)| RtmpMessageHeader {
+/// 指定した文字プールから、指定した長さ範囲の文字列を生成するサンプラー
+fn sample_string_from_pool<R: RangeBounds<usize>>(
+    ctx: &mut TestCaseContext,
+    pool: &[u8],
+    len_range: R,
+) -> String {
+    let len = noprop::sample_usize_in(ctx, len_range);
+    (0..len)
+        .map(|_| noprop::sample_choice(ctx, pool) as char)
+        .collect()
+}
+
+/// 有限かつ正規の `f64` を生成するサンプラー
+///
+/// NaN・無限大・非正規化数・ゼロを除外し、AMF の数値として安全に往復できる値のみを返す。
+fn sample_normal_f64(ctx: &mut TestCaseContext) -> f64 {
+    noprop::sample_with_rejection(ctx, 8, |ctx| {
+        let value = noprop::sample_f64(ctx);
+        value.is_normal().then_some(value)
+    })
+}
+
+/// 任意のメッセージヘッダーを生成するサンプラー
+///
+/// RTMP 仕様: タイムスタンプは 32-bit (最大 0xFFFFFFFF ミリ秒)
+fn sample_message_header(ctx: &mut TestCaseContext) -> RtmpMessageHeader {
+    let stream_id = noprop::sample_u32(ctx);
+    let timestamp_ms = noprop::sample_u32(ctx);
+    RtmpMessageHeader {
         stream_id: RtmpMessageStreamId::new(stream_id),
         timestamp: RtmpTimestamp::from_millis(timestamp_ms),
-    })
+    }
 }
 
-/// Protocol Control Message 用のヘッダを生成する Strategy
-/// RTMP 仕様 Section 5.4: Protocol Control Messages は message stream ID 0 を使用
-fn arb_pcm_header() -> impl Strategy<Value = RtmpMessageHeader> {
-    any::<u32>().prop_map(|timestamp_ms| RtmpMessageHeader {
+/// Protocol Control Message 用のヘッダーを生成するサンプラー
+///
+/// RTMP 仕様 Section 5.4: Protocol Control Messages は message stream ID 0 を使用する
+fn sample_pcm_header(ctx: &mut TestCaseContext) -> RtmpMessageHeader {
+    let timestamp_ms = noprop::sample_u32(ctx);
+    RtmpMessageHeader {
         stream_id: RtmpMessageStreamId::PCM,
         timestamp: RtmpTimestamp::from_millis(timestamp_ms),
-    })
+    }
 }
 
-/// RtmpChunkSize を生成する Strategy
-/// RTMP 仕様 Section 5.4.1: チャンクサイズは最小 1 バイト、推奨最小 128 バイト
-fn arb_chunk_size() -> impl Strategy<Value = RtmpChunkSize> {
-    prop_oneof![
+/// チャンクサイズを生成するサンプラー
+///
+/// RTMP 仕様 Section 5.4.1: チャンクサイズは最小 1 バイト、この実装の最大は 65536 バイト
+fn sample_chunk_size(ctx: &mut TestCaseContext) -> RtmpChunkSize {
+    match noprop::sample_weighted_index(ctx, &[1, 1, 1, 1]) {
         // 境界値
-        Just(RtmpChunkSize::new(1).expect("infallible")),
-        Just(RtmpChunkSize::new(128).expect("infallible")), // デフォルト
-        Just(RtmpChunkSize::new(65536).expect("infallible")), // MAX
+        0 => RtmpChunkSize::new(1).expect("1 は有効なチャンクサイズ"),
+        1 => RtmpChunkSize::new(128).expect("128 は有効なチャンクサイズ"),
+        2 => RtmpChunkSize::new(65536).expect("65536 は有効なチャンクサイズ"),
         // 一般的な値
-        (1usize..=65536).prop_filter_map("valid chunk size", RtmpChunkSize::new),
-    ]
+        _ => noprop::sample_with_rejection(ctx, 8, |ctx| {
+            RtmpChunkSize::new(noprop::sample_usize_in(ctx, 1..=65536))
+        }),
+    }
 }
 
-/// RtmpChunkStreamId を生成する Strategy
+/// チャンクストリーム ID を生成するサンプラー
+///
 /// RTMP 仕様 Section 5.3.1.1: 有効範囲は 2-65599
-fn arb_chunk_stream_id() -> impl Strategy<Value = RtmpChunkStreamId> {
-    prop_oneof![
+fn sample_chunk_stream_id(ctx: &mut TestCaseContext) -> RtmpChunkStreamId {
+    match noprop::sample_weighted_index(ctx, &[1, 1, 1, 1, 1, 1, 1]) {
         // 境界値
-        Just(RtmpChunkStreamId::new(2).expect("infallible")),
-        Just(RtmpChunkStreamId::new(63).expect("infallible")),
-        Just(RtmpChunkStreamId::new(64).expect("infallible")),
-        Just(RtmpChunkStreamId::new(319).expect("infallible")),
-        Just(RtmpChunkStreamId::new(320).expect("infallible")),
-        Just(RtmpChunkStreamId::new(65599).expect("infallible")),
+        0 => RtmpChunkStreamId::new(2).expect("2 は有効なチャンクストリーム ID"),
+        1 => RtmpChunkStreamId::new(63).expect("63 は有効なチャンクストリーム ID"),
+        2 => RtmpChunkStreamId::new(64).expect("64 は有効なチャンクストリーム ID"),
+        3 => RtmpChunkStreamId::new(319).expect("319 は有効なチャンクストリーム ID"),
+        4 => RtmpChunkStreamId::new(320).expect("320 は有効なチャンクストリーム ID"),
+        5 => RtmpChunkStreamId::new(65599).expect("65599 は有効なチャンクストリーム ID"),
         // 一般的な値
-        (2u32..=65599).prop_filter_map("valid chunk stream id", RtmpChunkStreamId::new),
-    ]
+        _ => noprop::sample_with_rejection(ctx, 8, |ctx| {
+            RtmpChunkStreamId::new(noprop::sample_u32_in(ctx, 2..=65599))
+        }),
+    }
 }
 
-/// SetPeerBandwidthLimitType を生成する Strategy
+/// SetPeerBandwidthLimitType を生成するサンプラー
+///
 /// RTMP 仕様 Section 5.4.5: Hard (0), Soft (1), Dynamic (2)
-fn arb_limit_type() -> impl Strategy<Value = SetPeerBandwidthLimitType> {
-    prop_oneof![
-        Just(SetPeerBandwidthLimitType::Hard),
-        Just(SetPeerBandwidthLimitType::Soft),
-        Just(SetPeerBandwidthLimitType::Dynamic),
-    ]
-}
-
-/// RtmpUserControlEvent を生成する Strategy
-/// RTMP 仕様 Section 6.2: User Control Message Events
-fn arb_user_control_event() -> impl Strategy<Value = RtmpUserControlEvent> {
-    prop_oneof![
-        // StreamBegin (0)
-        any::<u32>().prop_map(|stream_id| RtmpUserControlEvent::StreamBegin {
-            stream_id: RtmpMessageStreamId::new(stream_id),
-        }),
-        // StreamEof (1)
-        any::<u32>().prop_map(|stream_id| RtmpUserControlEvent::StreamEof {
-            stream_id: RtmpMessageStreamId::new(stream_id),
-        }),
-        // StreamDry (2)
-        any::<u32>().prop_map(|stream_id| RtmpUserControlEvent::StreamDry {
-            stream_id: RtmpMessageStreamId::new(stream_id),
-        }),
-        // SetBufferLength (3)
-        (any::<u32>(), any::<u32>()).prop_map(|(stream_id, length)| {
-            RtmpUserControlEvent::SetBufferLength {
-                stream_id: RtmpMessageStreamId::new(stream_id),
-                length,
-            }
-        }),
-        // StreamIsRecorded (4)
-        any::<u32>().prop_map(|stream_id| RtmpUserControlEvent::StreamIsRecorded {
-            stream_id: RtmpMessageStreamId::new(stream_id),
-        }),
-        // PingRequest (6)
-        any::<u32>().prop_map(|ms| RtmpUserControlEvent::PingRequest {
-            timestamp: RtmpTimestamp::from_millis(ms)
-        }),
-        // PingResponse (7)
-        any::<u32>().prop_map(|ms| RtmpUserControlEvent::PingResponse {
-            timestamp: RtmpTimestamp::from_millis(ms)
-        }),
-        // BufferEmpty (31)
-        any::<u32>().prop_map(|stream_id| RtmpUserControlEvent::BufferEmpty {
-            stream_id: RtmpMessageStreamId::new(stream_id),
-        }),
-        // BufferReady (32)
-        any::<u32>().prop_map(|stream_id| RtmpUserControlEvent::BufferReady {
-            stream_id: RtmpMessageStreamId::new(stream_id),
-        }),
-    ]
-}
-
-/// AudioFormat を生成する Strategy
-fn arb_audio_format() -> impl Strategy<Value = AudioFormat> {
-    prop_oneof![
-        Just(AudioFormat::Adpcm),
-        Just(AudioFormat::Mp3),
-        Just(AudioFormat::LinearPcmLittleEndian),
-        Just(AudioFormat::Nellymoser16khzMono),
-        Just(AudioFormat::Nellymoser8KhzMono),
-        Just(AudioFormat::Nellymoser),
-        Just(AudioFormat::G711AlawLogarithmicPcm),
-        Just(AudioFormat::G711MuLawLogarithmicPcm),
-        Just(AudioFormat::Aac),
-        Just(AudioFormat::Speex),
-        Just(AudioFormat::Mp3_8khz),
-        Just(AudioFormat::DeviceSpecificSound),
-    ]
-}
-
-/// AudioSampleRate を生成する Strategy
-fn arb_audio_sample_rate() -> impl Strategy<Value = AudioSampleRate> {
-    prop_oneof![
-        Just(AudioSampleRate::Khz5),
-        Just(AudioSampleRate::Khz11),
-        Just(AudioSampleRate::Khz22),
-        Just(AudioSampleRate::Khz44),
-    ]
-}
-
-/// AudioFrame を生成する Strategy
-/// 注意: is_aac_sequence_header は format == Aac の場合のみ有効
-fn arb_audio_frame() -> impl Strategy<Value = AudioFrame> {
-    (
-        any::<u32>(),
-        arb_audio_format(),
-        arb_audio_sample_rate(),
-        any::<bool>(),
-        any::<bool>(),
-        any::<bool>(),
-        vec(any::<u8>(), 0..256),
+fn sample_limit_type(ctx: &mut TestCaseContext) -> SetPeerBandwidthLimitType {
+    noprop::sample_choice(
+        ctx,
+        &[
+            SetPeerBandwidthLimitType::Hard,
+            SetPeerBandwidthLimitType::Soft,
+            SetPeerBandwidthLimitType::Dynamic,
+        ],
     )
-        .prop_map(
-            |(
-                timestamp_ms,
-                format,
-                sample_rate,
-                is_8bit_sample,
-                is_stereo,
-                is_aac_sequence_header,
-                data,
-            )| {
-                // is_aac_sequence_header は AAC 以外では常に false
-                let is_aac_sequence_header = if format == AudioFormat::Aac {
-                    is_aac_sequence_header
-                } else {
-                    false
-                };
-                AudioFrame {
-                    timestamp: RtmpTimestamp::from_millis(timestamp_ms),
-                    format,
-                    sample_rate,
-                    is_8bit_sample,
-                    is_stereo,
-                    is_aac_sequence_header,
-                    data,
-                }
-            },
-        )
 }
 
-/// VideoCodec を生成する Strategy
-fn arb_video_codec() -> impl Strategy<Value = VideoCodec> {
-    prop_oneof![
-        Just(VideoCodec::Jpeg),
-        Just(VideoCodec::H263),
-        Just(VideoCodec::ScreenVideo),
-        Just(VideoCodec::Vp6),
-        Just(VideoCodec::Vp6WithAlpha),
-        Just(VideoCodec::ScreenVideoV2),
-        Just(VideoCodec::Avc),
-    ]
+/// RtmpUserControlEvent を生成するサンプラー
+///
+/// RTMP 仕様 6.2 節: User Control Message Events
+fn sample_user_control_event(ctx: &mut TestCaseContext) -> RtmpUserControlEvent {
+    match noprop::sample_weighted_index(ctx, &[1, 1, 1, 1, 1, 1, 1, 1, 1]) {
+        // StreamBegin (イベント種別 0)
+        0 => RtmpUserControlEvent::StreamBegin {
+            stream_id: RtmpMessageStreamId::new(noprop::sample_u32(ctx)),
+        },
+        // StreamEof (イベント種別 1)
+        1 => RtmpUserControlEvent::StreamEof {
+            stream_id: RtmpMessageStreamId::new(noprop::sample_u32(ctx)),
+        },
+        // StreamDry (イベント種別 2)
+        2 => RtmpUserControlEvent::StreamDry {
+            stream_id: RtmpMessageStreamId::new(noprop::sample_u32(ctx)),
+        },
+        // SetBufferLength (イベント種別 3)
+        3 => RtmpUserControlEvent::SetBufferLength {
+            stream_id: RtmpMessageStreamId::new(noprop::sample_u32(ctx)),
+            length: noprop::sample_u32(ctx),
+        },
+        // StreamIsRecorded (イベント種別 4)
+        4 => RtmpUserControlEvent::StreamIsRecorded {
+            stream_id: RtmpMessageStreamId::new(noprop::sample_u32(ctx)),
+        },
+        // PingRequest (イベント種別 6)
+        5 => RtmpUserControlEvent::PingRequest {
+            timestamp: RtmpTimestamp::from_millis(noprop::sample_u32(ctx)),
+        },
+        // PingResponse (イベント種別 7)
+        6 => RtmpUserControlEvent::PingResponse {
+            timestamp: RtmpTimestamp::from_millis(noprop::sample_u32(ctx)),
+        },
+        // BufferEmpty (イベント種別 31)
+        7 => RtmpUserControlEvent::BufferEmpty {
+            stream_id: RtmpMessageStreamId::new(noprop::sample_u32(ctx)),
+        },
+        // BufferReady (イベント種別 32)
+        _ => RtmpUserControlEvent::BufferReady {
+            stream_id: RtmpMessageStreamId::new(noprop::sample_u32(ctx)),
+        },
+    }
 }
 
-/// VideoFrameType を生成する Strategy
-fn arb_video_frame_type() -> impl Strategy<Value = VideoFrameType> {
-    prop_oneof![
-        Just(VideoFrameType::KeyFrame),
-        Just(VideoFrameType::InterFrame),
-        Just(VideoFrameType::DisposableInterFrame),
-        Just(VideoFrameType::GeneratedKeyFrame),
-        Just(VideoFrameType::VideoInfoOrCommandFrame),
-    ]
+/// AudioFormat を生成するサンプラー
+fn sample_audio_format(ctx: &mut TestCaseContext) -> AudioFormat {
+    noprop::sample_choice(
+        ctx,
+        &[
+            AudioFormat::Adpcm,
+            AudioFormat::Mp3,
+            AudioFormat::LinearPcmLittleEndian,
+            AudioFormat::Nellymoser16khzMono,
+            AudioFormat::Nellymoser8KhzMono,
+            AudioFormat::Nellymoser,
+            AudioFormat::G711AlawLogarithmicPcm,
+            AudioFormat::G711MuLawLogarithmicPcm,
+            AudioFormat::Aac,
+            AudioFormat::Speex,
+            AudioFormat::Mp3_8khz,
+            AudioFormat::DeviceSpecificSound,
+        ],
+    )
 }
 
-/// VideoFrame を生成する Strategy
+/// AudioSampleRate を生成するサンプラー
+fn sample_audio_sample_rate(ctx: &mut TestCaseContext) -> AudioSampleRate {
+    noprop::sample_choice(
+        ctx,
+        &[
+            AudioSampleRate::Khz5,
+            AudioSampleRate::Khz11,
+            AudioSampleRate::Khz22,
+            AudioSampleRate::Khz44,
+        ],
+    )
+}
+
+/// AudioFrame を生成するサンプラー
+///
+/// 注意: is_aac_sequence_header は format == Aac の場合のみ有効
+fn sample_audio_frame(ctx: &mut TestCaseContext) -> AudioFrame {
+    let timestamp_ms = noprop::sample_u32(ctx);
+    let format = sample_audio_format(ctx);
+    let sample_rate = sample_audio_sample_rate(ctx);
+    let is_8bit_sample = noprop::sample_bool(ctx);
+    let is_stereo = noprop::sample_bool(ctx);
+    let is_aac_sequence_header = noprop::sample_bool(ctx);
+    let data_len = noprop::sample_usize_in(ctx, 0..256);
+    let data = noprop::sample_bytes_vec(ctx, data_len);
+
+    // is_aac_sequence_header は AAC 以外では常に false
+    let is_aac_sequence_header = if format == AudioFormat::Aac {
+        is_aac_sequence_header
+    } else {
+        false
+    };
+    AudioFrame {
+        timestamp: RtmpTimestamp::from_millis(timestamp_ms),
+        format,
+        sample_rate,
+        is_8bit_sample,
+        is_stereo,
+        is_aac_sequence_header,
+        data,
+    }
+}
+
+/// VideoCodec を生成するサンプラー
+fn sample_video_codec(ctx: &mut TestCaseContext) -> VideoCodec {
+    noprop::sample_choice(
+        ctx,
+        &[
+            VideoCodec::Jpeg,
+            VideoCodec::H263,
+            VideoCodec::ScreenVideo,
+            VideoCodec::Vp6,
+            VideoCodec::Vp6WithAlpha,
+            VideoCodec::ScreenVideoV2,
+            VideoCodec::Avc,
+        ],
+    )
+}
+
+/// VideoFrameType を生成するサンプラー
+fn sample_video_frame_type(ctx: &mut TestCaseContext) -> VideoFrameType {
+    noprop::sample_choice(
+        ctx,
+        &[
+            VideoFrameType::KeyFrame,
+            VideoFrameType::InterFrame,
+            VideoFrameType::DisposableInterFrame,
+            VideoFrameType::GeneratedKeyFrame,
+            VideoFrameType::VideoInfoOrCommandFrame,
+        ],
+    )
+}
+
+/// AvcPacketType を生成するサンプラー
+fn sample_avc_packet_type(ctx: &mut TestCaseContext) -> AvcPacketType {
+    noprop::sample_choice(
+        ctx,
+        &[
+            AvcPacketType::SequenceHeader,
+            AvcPacketType::NalUnit,
+            AvcPacketType::EndOfSequence,
+        ],
+    )
+}
+
+/// VideoFrame を生成するサンプラー
+///
 /// 注意:
 /// - avc_packet_type は codec == Avc かつ frame_type != VideoInfoOrCommandFrame の場合のみ有効 (かつ必須)
 /// - 非 Avc コーデック または VideoInfoOrCommandFrame では avc_packet_type は None
 /// - composition_timestamp_offset は avc_packet_type が Some の場合のみエンコードされる
 /// - composition_timestamp_offset は i24 範囲 (-8388608 ~ 8388607 ms) である必要がある
-fn arb_video_frame() -> impl Strategy<Value = VideoFrame> {
-    (
-        any::<u32>(),
-        -8388608i32..=8388607i32, // composition offset (i24 範囲)
-        arb_video_frame_type(),
-        arb_video_codec(),
-        prop_oneof![
-            Just(AvcPacketType::SequenceHeader),
-            Just(AvcPacketType::NalUnit),
-            Just(AvcPacketType::EndOfSequence),
-        ],
-        vec(any::<u8>(), 0..256),
-    )
-        .prop_map(
-            |(timestamp_ms, composition_offset, frame_type, codec, avc_type, data)| {
-                // AVC コーデックかつ VideoInfoOrCommandFrame でない場合のみ avc_packet_type を設定
-                // FLV 仕様: VideoInfoOrCommandFrame は AVC でも avc_packet_type を持たない
-                let (avc_packet_type, composition_timestamp_offset) = if codec == VideoCodec::Avc
-                    && frame_type != VideoFrameType::VideoInfoOrCommandFrame
-                {
-                    (
-                        Some(avc_type),
-                        RtmpTimestampDelta::from_millis(composition_offset),
-                    )
-                } else {
-                    (None, RtmpTimestampDelta::ZERO)
-                };
-                VideoFrame {
-                    timestamp: RtmpTimestamp::from_millis(timestamp_ms),
-                    composition_timestamp_offset,
-                    frame_type,
-                    codec,
-                    avc_packet_type,
-                    data,
-                }
-            },
-        )
+fn sample_video_frame(ctx: &mut TestCaseContext) -> VideoFrame {
+    let timestamp_ms = noprop::sample_u32(ctx);
+    // composition offset (i24 範囲)
+    let composition_offset = noprop::sample_i32_in(ctx, -8388608..=8388607);
+    let frame_type = sample_video_frame_type(ctx);
+    let codec = sample_video_codec(ctx);
+    let avc_type = sample_avc_packet_type(ctx);
+    let data_len = noprop::sample_usize_in(ctx, 0..256);
+    let data = noprop::sample_bytes_vec(ctx, data_len);
+
+    // AVC コーデックかつ VideoInfoOrCommandFrame でない場合のみ avc_packet_type を設定する。
+    // FLV 仕様: VideoInfoOrCommandFrame は AVC でも avc_packet_type を持たない
+    let (avc_packet_type, composition_timestamp_offset) =
+        if codec == VideoCodec::Avc && frame_type != VideoFrameType::VideoInfoOrCommandFrame {
+            (
+                Some(avc_type),
+                RtmpTimestampDelta::from_millis(composition_offset),
+            )
+        } else {
+            (None, RtmpTimestampDelta::ZERO)
+        };
+    VideoFrame {
+        timestamp: RtmpTimestamp::from_millis(timestamp_ms),
+        composition_timestamp_offset,
+        frame_type,
+        codec,
+        avc_packet_type,
+        data,
+    }
 }
 
-/// AMF0 の簡単な値を生成する Strategy (コマンド/データメッセージ用)
-fn arb_simple_amf0_value() -> impl Strategy<Value = Amf0Value> {
-    prop_oneof![
+/// AMF0 の簡単な値を生成するサンプラー (コマンド/データメッセージ用)
+fn sample_simple_amf0_value(ctx: &mut TestCaseContext) -> Amf0Value {
+    match noprop::sample_weighted_index(ctx, &[1, 1, 1, 1, 1, 1]) {
         // 数値
-        prop::num::f64::NORMAL.prop_map(Amf0Value::Number),
-        Just(Amf0Value::Number(0.0)),
+        0 => Amf0Value::Number(sample_normal_f64(ctx)),
+        1 => Amf0Value::Number(0.0),
         // 真偽値
-        any::<bool>().prop_map(Amf0Value::Boolean),
+        2 => Amf0Value::Boolean(noprop::sample_bool(ctx)),
         // 文字列 (短め)
-        "[a-zA-Z0-9]{0,50}".prop_map(Amf0Value::String),
-        // Null / Undefined
-        Just(Amf0Value::Null),
-        Just(Amf0Value::Undefined),
-    ]
+        3 => Amf0Value::String(sample_string_from_pool(ctx, ALPHANUMERIC_CHARS, 0..=50)),
+        // Null と Undefined
+        4 => Amf0Value::Null,
+        _ => Amf0Value::Undefined,
+    }
 }
 
-/// AMF3 の簡単な値を生成する Strategy (コマンド/データメッセージ用)
-fn arb_simple_amf3_value() -> impl Strategy<Value = Amf3Value> {
-    prop_oneof![
+/// AMF3 の簡単な値を生成するサンプラー (コマンド/データメッセージ用)
+fn sample_simple_amf3_value(ctx: &mut TestCaseContext) -> Amf3Value {
+    match noprop::sample_weighted_index(ctx, &[1, 1, 1, 1, 1, 1, 1]) {
         // 整数 (i29 範囲)
-        (-268435456i32..=268435455i32).prop_map(Amf3Value::Integer),
-        // Double
-        prop::num::f64::NORMAL.prop_map(Amf3Value::Double),
-        Just(Amf3Value::Double(0.0)),
+        0 => Amf3Value::Integer(noprop::sample_i32_in(ctx, -268435456..=268435455)),
+        // Double 型
+        1 => Amf3Value::Double(sample_normal_f64(ctx)),
+        2 => Amf3Value::Double(0.0),
         // 真偽値
-        any::<bool>().prop_map(Amf3Value::Boolean),
+        3 => Amf3Value::Boolean(noprop::sample_bool(ctx)),
         // 文字列 (短め)
-        "[a-zA-Z0-9]{0,50}".prop_map(Amf3Value::String),
-        // Null / Undefined
-        Just(Amf3Value::Null),
-        Just(Amf3Value::Undefined),
-    ]
+        4 => Amf3Value::String(sample_string_from_pool(ctx, ALPHANUMERIC_CHARS, 0..=50)),
+        // Null と Undefined
+        5 => Amf3Value::Null,
+        _ => Amf3Value::Undefined,
+    }
 }
 
-/// AMF0 Object を生成する Strategy
-fn arb_amf0_object() -> impl Strategy<Value = Amf0Value> {
-    vec(("[a-zA-Z]{1,20}", arb_simple_amf0_value()), 0..5).prop_map(|entries| Amf0Value::Object {
+/// AMF0 Object を生成するサンプラー
+fn sample_amf0_object(ctx: &mut TestCaseContext) -> Amf0Value {
+    let len = noprop::sample_usize_in(ctx, 0..5);
+    let entries = (0..len)
+        .map(|_| Pair {
+            key: sample_string_from_pool(ctx, ALPHABETIC_CHARS, 1..=20),
+            value: sample_simple_amf0_value(ctx),
+        })
+        .collect();
+    Amf0Value::Object {
         class_name: None,
-        entries: entries
-            .into_iter()
-            .map(|(key, value)| Pair { key, value })
-            .collect(),
-    })
+        entries,
+    }
 }
 
-/// AMF3 Object を生成する Strategy
-fn arb_amf3_object() -> impl Strategy<Value = Amf3Value> {
-    vec(("[a-zA-Z]{1,20}", arb_simple_amf3_value()), 0..5).prop_map(|entries| {
-        let entries: Vec<_> = entries
-            .into_iter()
-            .map(|(key, value)| Pair { key, value })
-            .collect();
-        Amf3Value::Object {
-            class_name: None,
-            sealed_count: 0,
-            entries,
-        }
-    })
+/// AMF3 Object を生成するサンプラー
+fn sample_amf3_object(ctx: &mut TestCaseContext) -> Amf3Value {
+    let len = noprop::sample_usize_in(ctx, 0..5);
+    let entries = (0..len)
+        .map(|_| Pair {
+            key: sample_string_from_pool(ctx, ALPHABETIC_CHARS, 1..=20),
+            value: sample_simple_amf3_value(ctx),
+        })
+        .collect();
+    Amf3Value::Object {
+        class_name: None,
+        sealed_count: 0,
+        entries,
+    }
 }
 
-/// AmfValue (AMF0) を生成する Strategy
-fn arb_amf_value_amf0() -> impl Strategy<Value = AmfValue> {
-    prop_oneof![
-        arb_simple_amf0_value().prop_map(AmfValue::Amf0),
-        arb_amf0_object().prop_map(AmfValue::Amf0),
-    ]
+/// AmfValue (AMF0) を生成するサンプラー
+fn sample_amf_value_amf0(ctx: &mut TestCaseContext) -> AmfValue {
+    match noprop::sample_weighted_index(ctx, &[1, 1]) {
+        0 => AmfValue::Amf0(sample_simple_amf0_value(ctx)),
+        _ => AmfValue::Amf0(sample_amf0_object(ctx)),
+    }
 }
 
-/// AmfValue (AMF3) を生成する Strategy
-fn arb_amf_value_amf3() -> impl Strategy<Value = AmfValue> {
-    prop_oneof![
-        arb_simple_amf3_value().prop_map(AmfValue::Amf3),
-        arb_amf3_object().prop_map(AmfValue::Amf3),
-    ]
+/// AmfValue (AMF3) を生成するサンプラー
+fn sample_amf_value_amf3(ctx: &mut TestCaseContext) -> AmfValue {
+    match noprop::sample_weighted_index(ctx, &[1, 1]) {
+        0 => AmfValue::Amf3(sample_simple_amf3_value(ctx)),
+        _ => AmfValue::Amf3(sample_amf3_object(ctx)),
+    }
 }
 
 // =============================================================================
-// Protocol Control Messages (Section 5.4)
+// Protocol Control メッセージ (RTMP 仕様 5.4 節)
 // =============================================================================
 
-/// SetChunkSize メッセージを生成する Strategy
+/// SetChunkSize メッセージを生成するサンプラー
+///
 /// RTMP 仕様 Section 5.4.1: Set Chunk Size (1)
-fn arb_set_chunk_size_message() -> impl Strategy<Value = RtmpMessage> {
-    (arb_pcm_header(), arb_chunk_size())
-        .prop_map(|(header, size)| RtmpMessage::SetChunkSize { header, size })
+fn sample_set_chunk_size_message(ctx: &mut TestCaseContext) -> RtmpMessage {
+    let header = sample_pcm_header(ctx);
+    let size = sample_chunk_size(ctx);
+    RtmpMessage::SetChunkSize { header, size }
 }
 
-/// Abort メッセージを生成する Strategy
+/// Abort メッセージを生成するサンプラー
+///
 /// RTMP 仕様 Section 5.4.2: Abort Message (2)
-fn arb_abort_message() -> impl Strategy<Value = RtmpMessage> {
-    (arb_pcm_header(), arb_chunk_stream_id()).prop_map(|(header, chunk_stream_id)| {
-        RtmpMessage::Abort {
-            header,
-            chunk_stream_id,
-        }
-    })
+fn sample_abort_message(ctx: &mut TestCaseContext) -> RtmpMessage {
+    let header = sample_pcm_header(ctx);
+    let chunk_stream_id = sample_chunk_stream_id(ctx);
+    RtmpMessage::Abort {
+        header,
+        chunk_stream_id,
+    }
 }
 
-/// Acknowledgement メッセージを生成する Strategy
+/// Acknowledgement メッセージを生成するサンプラー
+///
 /// RTMP 仕様 Section 5.4.3: Acknowledgement (3)
-fn arb_ack_message() -> impl Strategy<Value = RtmpMessage> {
-    (arb_pcm_header(), any::<u32>()).prop_map(|(header, sequence_number)| RtmpMessage::Ack {
+fn sample_ack_message(ctx: &mut TestCaseContext) -> RtmpMessage {
+    let header = sample_pcm_header(ctx);
+    let sequence_number = noprop::sample_u32(ctx);
+    RtmpMessage::Ack {
         header,
         sequence_number,
-    })
+    }
 }
 
-/// Window Acknowledgement Size メッセージを生成する Strategy
+/// Window Acknowledgement Size メッセージを生成するサンプラー
+///
 /// RTMP 仕様 Section 5.4.4: Window Acknowledgement Size (5)
-fn arb_win_ack_size_message() -> impl Strategy<Value = RtmpMessage> {
-    (arb_pcm_header(), any::<u32>())
-        .prop_map(|(header, size)| RtmpMessage::WinAckSize { header, size })
+fn sample_win_ack_size_message(ctx: &mut TestCaseContext) -> RtmpMessage {
+    let header = sample_pcm_header(ctx);
+    let size = noprop::sample_u32(ctx);
+    RtmpMessage::WinAckSize { header, size }
 }
 
-/// Set Peer Bandwidth メッセージを生成する Strategy
+/// Set Peer Bandwidth メッセージを生成するサンプラー
+///
 /// RTMP 仕様 Section 5.4.5: Set Peer Bandwidth (6)
-fn arb_set_peer_bandwidth_message() -> impl Strategy<Value = RtmpMessage> {
-    (arb_pcm_header(), any::<u32>(), arb_limit_type()).prop_map(|(header, size, limit_type)| {
-        RtmpMessage::SetPeerBandwidth {
-            header,
-            size,
-            limit_type,
-        }
-    })
+fn sample_set_peer_bandwidth_message(ctx: &mut TestCaseContext) -> RtmpMessage {
+    let header = sample_pcm_header(ctx);
+    let size = noprop::sample_u32(ctx);
+    let limit_type = sample_limit_type(ctx);
+    RtmpMessage::SetPeerBandwidth {
+        header,
+        size,
+        limit_type,
+    }
 }
 
-/// User Control メッセージを生成する Strategy
+/// User Control メッセージを生成するサンプラー
+///
 /// RTMP 仕様 Section 6.2: User Control Messages (4)
-fn arb_user_control_message() -> impl Strategy<Value = RtmpMessage> {
-    (arb_pcm_header(), arb_user_control_event())
-        .prop_map(|(header, event)| RtmpMessage::UserControl { header, event })
+fn sample_user_control_message(ctx: &mut TestCaseContext) -> RtmpMessage {
+    let header = sample_pcm_header(ctx);
+    let event = sample_user_control_event(ctx);
+    RtmpMessage::UserControl { header, event }
 }
 
 // =============================================================================
-// Media Messages (Section 7.1.4, 7.1.5)
+// メディアメッセージ (RTMP 仕様 7.1.4 節、7.1.5 節)
 // =============================================================================
 
-/// Audio メッセージを生成する Strategy
+/// Audio メッセージを生成するサンプラー
+///
 /// RTMP 仕様 Section 7.1.4: Audio Message (8)
 /// 注意: frame.timestamp は decode 時に header.timestamp から設定されるため、一致させる必要がある
-fn arb_audio_message() -> impl Strategy<Value = RtmpMessage> {
-    (arb_message_header(), arb_audio_frame()).prop_map(|(header, mut frame)| {
-        // frame.timestamp は header.timestamp と一致させる (decode 時の挙動に合わせる)
-        frame.timestamp = header.timestamp;
-        RtmpMessage::Audio { header, frame }
-    })
+fn sample_audio_message(ctx: &mut TestCaseContext) -> RtmpMessage {
+    let header = sample_message_header(ctx);
+    let mut frame = sample_audio_frame(ctx);
+    // frame.timestamp は header.timestamp と一致させる (decode 時の挙動に合わせる)
+    frame.timestamp = header.timestamp;
+    RtmpMessage::Audio { header, frame }
 }
 
-/// Video/Audio メッセージ用のヘッダを生成する Strategy
-fn arb_media_header() -> impl Strategy<Value = RtmpMessageHeader> {
-    (any::<u32>(), any::<u32>()).prop_map(|(stream_id, timestamp_ms)| RtmpMessageHeader {
-        stream_id: RtmpMessageStreamId::new(stream_id),
-        timestamp: RtmpTimestamp::from_millis(timestamp_ms),
-    })
-}
-
-/// Video メッセージを生成する Strategy
+/// Video メッセージを生成するサンプラー
+///
 /// RTMP 仕様 Section 7.1.5: Video Message (9)
 /// 注意: frame.timestamp は decode 時に header.timestamp から設定されるため、一致させる必要がある
-fn arb_video_message() -> impl Strategy<Value = RtmpMessage> {
-    (arb_media_header(), arb_video_frame()).prop_map(|(header, mut frame)| {
-        // frame.timestamp は header.timestamp と一致させる (decode 時の挙動に合わせる)
-        frame.timestamp = header.timestamp;
-        if frame.avc_packet_type.is_none() {
-            frame.composition_timestamp_offset = RtmpTimestampDelta::ZERO;
-        }
-        RtmpMessage::Video { header, frame }
-    })
+fn sample_video_message(ctx: &mut TestCaseContext) -> RtmpMessage {
+    let header = sample_message_header(ctx);
+    let mut frame = sample_video_frame(ctx);
+    // frame.timestamp は header.timestamp と一致させる (decode 時の挙動に合わせる)
+    frame.timestamp = header.timestamp;
+    if frame.avc_packet_type.is_none() {
+        frame.composition_timestamp_offset = RtmpTimestampDelta::ZERO;
+    }
+    RtmpMessage::Video { header, frame }
 }
 
 // =============================================================================
-// Command/Data Messages (Section 7.1.1, 7.1.2)
+// コマンド / データメッセージ (RTMP 仕様 7.1.1 節、7.1.2 節)
 // =============================================================================
 
-/// Command メッセージ (AMF0) を生成する Strategy
+/// Command メッセージ (AMF0) を生成するサンプラー
+///
 /// RTMP 仕様 Section 7.1.1: Command Message (20)
-fn arb_command_amf0_message() -> impl Strategy<Value = RtmpMessage> {
-    (
-        arb_message_header(),
-        "[a-zA-Z]{1,20}",                // command name
-        0i64..=1_000_000i64,             // transaction id
-        arb_amf0_object(),               // command object
-        vec(arb_amf_value_amf0(), 0..3), // optional args
-    )
-        .prop_map(
-            |(header, name, transaction_id, object, args)| RtmpMessage::Command {
-                header,
-                amf_version: AmfVersion::Amf0,
-                name,
-                transaction_id: TransactionId::from_f64(transaction_id as f64),
-                object: AmfValue::Amf0(object),
-                args,
-            },
-        )
+fn sample_command_amf0_message(ctx: &mut TestCaseContext) -> RtmpMessage {
+    let header = sample_message_header(ctx);
+    // コマンド名
+    let name = sample_string_from_pool(ctx, ALPHABETIC_CHARS, 1..=20);
+    // トランザクション ID
+    let transaction_id = noprop::sample_u32_in(ctx, 0..=1_000_000);
+    // コマンドオブジェクト
+    let object = sample_amf0_object(ctx);
+    // 任意の引数
+    let args_len = noprop::sample_usize_in(ctx, 0..3);
+    let args = (0..args_len).map(|_| sample_amf_value_amf0(ctx)).collect();
+    RtmpMessage::Command {
+        header,
+        amf_version: AmfVersion::Amf0,
+        name,
+        transaction_id: TransactionId::from_f64(f64::from(transaction_id)),
+        object: AmfValue::Amf0(object),
+        args,
+    }
 }
 
-/// Command メッセージ (AMF3) を生成する Strategy
+/// Command メッセージ (AMF3) を生成するサンプラー
+///
 /// RTMP 仕様 Section 7.1.1: Command Message (17)
-fn arb_command_amf3_message() -> impl Strategy<Value = RtmpMessage> {
-    (
-        arb_message_header(),
-        "[a-zA-Z]{1,20}",                // command name
-        0i64..=1_000_000i64,             // transaction id
-        arb_amf3_object(),               // command object
-        vec(arb_amf_value_amf3(), 0..3), // optional args
-    )
-        .prop_map(
-            |(header, name, transaction_id, object, args)| RtmpMessage::Command {
-                header,
-                amf_version: AmfVersion::Amf3,
-                name,
-                transaction_id: TransactionId::from_f64(transaction_id as f64),
-                object: AmfValue::Amf3(object),
-                args,
-            },
-        )
+fn sample_command_amf3_message(ctx: &mut TestCaseContext) -> RtmpMessage {
+    let header = sample_message_header(ctx);
+    // コマンド名
+    let name = sample_string_from_pool(ctx, ALPHABETIC_CHARS, 1..=20);
+    // トランザクション ID
+    let transaction_id = noprop::sample_u32_in(ctx, 0..=1_000_000);
+    // コマンドオブジェクト
+    let object = sample_amf3_object(ctx);
+    // 任意の引数
+    let args_len = noprop::sample_usize_in(ctx, 0..3);
+    let args = (0..args_len).map(|_| sample_amf_value_amf3(ctx)).collect();
+    RtmpMessage::Command {
+        header,
+        amf_version: AmfVersion::Amf3,
+        name,
+        transaction_id: TransactionId::from_f64(f64::from(transaction_id)),
+        object: AmfValue::Amf3(object),
+        args,
+    }
 }
 
-/// Data メッセージ (AMF0) を生成する Strategy
+/// Data メッセージ (AMF0) を生成するサンプラー
+///
 /// RTMP 仕様 Section 7.1.2: Data Message (18)
-fn arb_data_amf0_message() -> impl Strategy<Value = RtmpMessage> {
-    (arb_message_header(), vec(arb_amf_value_amf0(), 1..5)).prop_map(|(header, values)| {
-        RtmpMessage::Data {
-            header,
-            amf_version: AmfVersion::Amf0,
-            values,
-        }
-    })
+fn sample_data_amf0_message(ctx: &mut TestCaseContext) -> RtmpMessage {
+    let header = sample_message_header(ctx);
+    let values_len = noprop::sample_usize_in(ctx, 1..5);
+    let values = (0..values_len)
+        .map(|_| sample_amf_value_amf0(ctx))
+        .collect();
+    RtmpMessage::Data {
+        header,
+        amf_version: AmfVersion::Amf0,
+        values,
+    }
 }
 
-/// Data メッセージ (AMF3) を生成する Strategy
+/// Data メッセージ (AMF3) を生成するサンプラー
+///
 /// RTMP 仕様 Section 7.1.2: Data Message (15)
-fn arb_data_amf3_message() -> impl Strategy<Value = RtmpMessage> {
-    (arb_message_header(), vec(arb_amf_value_amf3(), 1..5)).prop_map(|(header, values)| {
-        RtmpMessage::Data {
-            header,
-            amf_version: AmfVersion::Amf3,
-            values,
-        }
-    })
+fn sample_data_amf3_message(ctx: &mut TestCaseContext) -> RtmpMessage {
+    let header = sample_message_header(ctx);
+    let values_len = noprop::sample_usize_in(ctx, 1..5);
+    let values = (0..values_len)
+        .map(|_| sample_amf_value_amf3(ctx))
+        .collect();
+    RtmpMessage::Data {
+        header,
+        amf_version: AmfVersion::Amf3,
+        values,
+    }
 }
 
 // =============================================================================
-// 全 RtmpMessage の Strategy
+// 全 RtmpMessage のサンプラー
 // =============================================================================
 
-/// すべての種類の RtmpMessage を生成する Strategy
-fn arb_rtmp_message() -> impl Strategy<Value = RtmpMessage> {
-    prop_oneof![
-        // Protocol Control Messages
-        arb_set_chunk_size_message(),
-        arb_abort_message(),
-        arb_ack_message(),
-        arb_win_ack_size_message(),
-        arb_set_peer_bandwidth_message(),
-        arb_user_control_message(),
-        // Media Messages
-        arb_audio_message(),
-        arb_video_message(),
-        // Command/Data Messages
-        arb_command_amf0_message(),
-        arb_command_amf3_message(),
-        arb_data_amf0_message(),
-        arb_data_amf3_message(),
-    ]
+/// すべての種類の RtmpMessage を生成するサンプラー
+fn sample_rtmp_message(ctx: &mut TestCaseContext) -> RtmpMessage {
+    match noprop::sample_weighted_index(ctx, &[1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]) {
+        // Protocol Control メッセージ
+        0 => sample_set_chunk_size_message(ctx),
+        1 => sample_abort_message(ctx),
+        2 => sample_ack_message(ctx),
+        3 => sample_win_ack_size_message(ctx),
+        4 => sample_set_peer_bandwidth_message(ctx),
+        5 => sample_user_control_message(ctx),
+        // メディアメッセージ
+        6 => sample_audio_message(ctx),
+        7 => sample_video_message(ctx),
+        // コマンド / データメッセージ
+        8 => sample_command_amf0_message(ctx),
+        9 => sample_command_amf3_message(ctx),
+        10 => sample_data_amf0_message(ctx),
+        _ => sample_data_amf3_message(ctx),
+    }
 }
 
 // =============================================================================
 // Roundtrip テスト
 // =============================================================================
 
-proptest! {
-    #![proptest_config(ProptestConfig::with_cases(500))]
+/// Protocol Control Message: SetChunkSize の roundtrip を検証する
+#[test]
+fn set_chunk_size_roundtrip() -> noprop::TestResult {
+    let seed = noprop::seed_from_env_or_time(SEED_ENV)?;
+    noprop::Runner::new(seed).run(CASES, |ctx: &mut TestCaseContext| {
+        roundtrip_test(sample_set_chunk_size_message(ctx));
+        Ok(())
+    })?;
+    Ok(())
+}
 
-    /// Protocol Control Message: SetChunkSize の roundtrip
-    #[test]
-    fn set_chunk_size_roundtrip(message in arb_set_chunk_size_message()) {
-        roundtrip_test(message)?;
-    }
+/// Protocol Control Message: Abort の roundtrip を検証する
+#[test]
+fn abort_roundtrip() -> noprop::TestResult {
+    let seed = noprop::seed_from_env_or_time(SEED_ENV)?;
+    noprop::Runner::new(seed).run(CASES, |ctx: &mut TestCaseContext| {
+        roundtrip_test(sample_abort_message(ctx));
+        Ok(())
+    })?;
+    Ok(())
+}
 
-    /// Protocol Control Message: Abort の roundtrip
-    #[test]
-    fn abort_roundtrip(message in arb_abort_message()) {
-        roundtrip_test(message)?;
-    }
+/// Protocol Control Message: Ack の roundtrip を検証する
+#[test]
+fn ack_roundtrip() -> noprop::TestResult {
+    let seed = noprop::seed_from_env_or_time(SEED_ENV)?;
+    noprop::Runner::new(seed).run(CASES, |ctx: &mut TestCaseContext| {
+        roundtrip_test(sample_ack_message(ctx));
+        Ok(())
+    })?;
+    Ok(())
+}
 
-    /// Protocol Control Message: Ack の roundtrip
-    #[test]
-    fn ack_roundtrip(message in arb_ack_message()) {
-        roundtrip_test(message)?;
-    }
+/// Protocol Control Message: WinAckSize の roundtrip を検証する
+#[test]
+fn win_ack_size_roundtrip() -> noprop::TestResult {
+    let seed = noprop::seed_from_env_or_time(SEED_ENV)?;
+    noprop::Runner::new(seed).run(CASES, |ctx: &mut TestCaseContext| {
+        roundtrip_test(sample_win_ack_size_message(ctx));
+        Ok(())
+    })?;
+    Ok(())
+}
 
-    /// Protocol Control Message: WinAckSize の roundtrip
-    #[test]
-    fn win_ack_size_roundtrip(message in arb_win_ack_size_message()) {
-        roundtrip_test(message)?;
-    }
+/// Protocol Control Message: SetPeerBandwidth の roundtrip を検証する
+#[test]
+fn set_peer_bandwidth_roundtrip() -> noprop::TestResult {
+    let seed = noprop::seed_from_env_or_time(SEED_ENV)?;
+    noprop::Runner::new(seed).run(CASES, |ctx: &mut TestCaseContext| {
+        roundtrip_test(sample_set_peer_bandwidth_message(ctx));
+        Ok(())
+    })?;
+    Ok(())
+}
 
-    /// Protocol Control Message: SetPeerBandwidth の roundtrip
-    #[test]
-    fn set_peer_bandwidth_roundtrip(message in arb_set_peer_bandwidth_message()) {
-        roundtrip_test(message)?;
-    }
+/// User Control Message の roundtrip を検証する
+#[test]
+fn user_control_roundtrip() -> noprop::TestResult {
+    let seed = noprop::seed_from_env_or_time(SEED_ENV)?;
+    noprop::Runner::new(seed).run(CASES, |ctx: &mut TestCaseContext| {
+        roundtrip_test(sample_user_control_message(ctx));
+        Ok(())
+    })?;
+    Ok(())
+}
 
-    /// User Control Message の roundtrip
-    #[test]
-    fn user_control_roundtrip(message in arb_user_control_message()) {
-        roundtrip_test(message)?;
-    }
+/// Audio Message の roundtrip を検証する
+#[test]
+fn audio_roundtrip() -> noprop::TestResult {
+    let seed = noprop::seed_from_env_or_time(SEED_ENV)?;
+    noprop::Runner::new(seed).run(CASES, |ctx: &mut TestCaseContext| {
+        roundtrip_test(sample_audio_message(ctx));
+        Ok(())
+    })?;
+    Ok(())
+}
 
-    /// Audio Message の roundtrip
-    #[test]
-    fn audio_roundtrip(message in arb_audio_message()) {
-        roundtrip_test(message)?;
-    }
+/// Video Message の roundtrip を検証する
+#[test]
+fn video_roundtrip() -> noprop::TestResult {
+    let seed = noprop::seed_from_env_or_time(SEED_ENV)?;
+    noprop::Runner::new(seed).run(CASES, |ctx: &mut TestCaseContext| {
+        roundtrip_test(sample_video_message(ctx));
+        Ok(())
+    })?;
+    Ok(())
+}
 
-    /// Video Message の roundtrip
-    #[test]
-    fn video_roundtrip(message in arb_video_message()) {
-        roundtrip_test(message)?;
-    }
-
-    /// Command Message (AMF0) の roundtrip
-    #[test]
-    fn command_amf0_roundtrip(message in arb_command_amf0_message()) {
-        // NaN を含む場合はスキップ (比較不可能)
+/// Command Message (AMF0) の roundtrip を検証する
+#[test]
+fn command_amf0_roundtrip() -> noprop::TestResult {
+    let seed = noprop::seed_from_env_or_time(SEED_ENV)?;
+    noprop::Runner::new(seed).run(CASES, |ctx: &mut TestCaseContext| {
+        let message = sample_command_amf0_message(ctx);
+        // NaN を含む場合は比較不可能なため、このケースをスキップする
         if contains_nan(&message) {
             return Ok(());
         }
-        roundtrip_test(message)?;
-    }
+        roundtrip_test(message);
+        Ok(())
+    })?;
+    Ok(())
+}
 
-    /// Command Message (AMF3) の roundtrip
-    #[test]
-    fn command_amf3_roundtrip(message in arb_command_amf3_message()) {
+/// Command Message (AMF3) の roundtrip を検証する
+#[test]
+fn command_amf3_roundtrip() -> noprop::TestResult {
+    let seed = noprop::seed_from_env_or_time(SEED_ENV)?;
+    noprop::Runner::new(seed).run(CASES, |ctx: &mut TestCaseContext| {
+        let message = sample_command_amf3_message(ctx);
+        // NaN を含む場合は比較不可能なため、このケースをスキップする
         if contains_nan(&message) {
             return Ok(());
         }
-        roundtrip_test(message)?;
-    }
+        roundtrip_test(message);
+        Ok(())
+    })?;
+    Ok(())
+}
 
-    /// Data Message (AMF0) の roundtrip
-    #[test]
-    fn data_amf0_roundtrip(message in arb_data_amf0_message()) {
+/// Data Message (AMF0) の roundtrip を検証する
+#[test]
+fn data_amf0_roundtrip() -> noprop::TestResult {
+    let seed = noprop::seed_from_env_or_time(SEED_ENV)?;
+    noprop::Runner::new(seed).run(CASES, |ctx: &mut TestCaseContext| {
+        let message = sample_data_amf0_message(ctx);
+        // NaN を含む場合は比較不可能なため、このケースをスキップする
         if contains_nan(&message) {
             return Ok(());
         }
-        roundtrip_test(message)?;
-    }
+        roundtrip_test(message);
+        Ok(())
+    })?;
+    Ok(())
+}
 
-    /// Data Message (AMF3) の roundtrip
-    #[test]
-    fn data_amf3_roundtrip(message in arb_data_amf3_message()) {
+/// Data Message (AMF3) の roundtrip を検証する
+#[test]
+fn data_amf3_roundtrip() -> noprop::TestResult {
+    let seed = noprop::seed_from_env_or_time(SEED_ENV)?;
+    noprop::Runner::new(seed).run(CASES, |ctx: &mut TestCaseContext| {
+        let message = sample_data_amf3_message(ctx);
+        // NaN を含む場合は比較不可能なため、このケースをスキップする
         if contains_nan(&message) {
             return Ok(());
         }
-        roundtrip_test(message)?;
-    }
+        roundtrip_test(message);
+        Ok(())
+    })?;
+    Ok(())
+}
 
-    /// 全種類の RtmpMessage の roundtrip
-    #[test]
-    fn all_message_roundtrip(message in arb_rtmp_message()) {
+/// 全種類の RtmpMessage の roundtrip を検証する
+#[test]
+fn all_message_roundtrip() -> noprop::TestResult {
+    let seed = noprop::seed_from_env_or_time(SEED_ENV)?;
+    noprop::Runner::new(seed).run(CASES, |ctx: &mut TestCaseContext| {
+        let message = sample_rtmp_message(ctx);
+        // NaN を含む場合は比較不可能なため、このケースをスキップする
         if contains_nan(&message) {
             return Ok(());
         }
-        roundtrip_test(message)?;
-    }
+        roundtrip_test(message);
+        Ok(())
+    })?;
+    Ok(())
 }
 
 // =============================================================================
 // 境界値テスト
 // =============================================================================
 
-proptest! {
-    #![proptest_config(ProptestConfig::with_cases(100))]
+/// SetChunkSize の境界値を roundtrip で検証する
+///
+/// RTMP 仕様 Section 5.4.1: 最小 1 バイト、この実装の最大は 65536 バイト
+#[test]
+fn set_chunk_size_boundary() -> noprop::TestResult {
+    let seed = noprop::seed_from_env_or_time(SEED_ENV)?;
+    noprop::Runner::new(seed).run(BOUNDARY_CASES, |ctx: &mut TestCaseContext| {
+        let size = noprop::sample_choice(ctx, &[1usize, 128, 65536]);
+        let chunk_size = RtmpChunkSize::new(size).expect("境界値はすべて有効なチャンクサイズ");
+        let message = RtmpMessage::SetChunkSize {
+            header: RtmpMessageHeader::PCM,
+            size: chunk_size,
+        };
+        roundtrip_test(message);
+        Ok(())
+    })?;
+    Ok(())
+}
 
-    /// SetChunkSize の境界値テスト
-    /// RTMP 仕様 Section 5.4.1: 最小 1 バイト、最大 0x7FFFFFFF (31-bit)
-    #[test]
-    fn set_chunk_size_boundary(
-        size in prop_oneof![
-            Just(1usize),       // 最小
-            Just(128usize),     // デフォルト
-            Just(65536usize),   // MAX (実装の制限)
-        ]
-    ) {
-        if let Some(chunk_size) = RtmpChunkSize::new(size) {
-            let message = RtmpMessage::SetChunkSize {
-                header: RtmpMessageHeader {
-                    stream_id: RtmpMessageStreamId::PCM,
-                    timestamp: RtmpTimestamp::ZERO,
-                },
-                size: chunk_size,
-            };
-            roundtrip_test(message)?;
-        }
-    }
+/// Abort メッセージの境界値を roundtrip で検証する
+///
+/// chunk stream ID の境界値 (2, 63, 64, 319, 320, 65599)
+#[test]
+fn abort_boundary() -> noprop::TestResult {
+    let seed = noprop::seed_from_env_or_time(SEED_ENV)?;
+    noprop::Runner::new(seed).run(BOUNDARY_CASES, |ctx: &mut TestCaseContext| {
+        let id = noprop::sample_choice(ctx, &[2u32, 63, 64, 319, 320, 65599]);
+        let chunk_stream_id =
+            RtmpChunkStreamId::new(id).expect("境界値はすべて有効なチャンクストリーム ID");
+        let message = RtmpMessage::Abort {
+            header: RtmpMessageHeader::PCM,
+            chunk_stream_id,
+        };
+        roundtrip_test(message);
+        Ok(())
+    })?;
+    Ok(())
+}
 
-    /// Abort メッセージの境界値テスト
-    /// chunk stream ID の境界値 (2, 63, 64, 319, 320, 65599)
-    #[test]
-    fn abort_boundary(
-        id in prop_oneof![
-            Just(2u32),
-            Just(63u32),
-            Just(64u32),
-            Just(319u32),
-            Just(320u32),
-            Just(65599u32),
-        ]
-    ) {
-        if let Some(chunk_stream_id) = RtmpChunkStreamId::new(id) {
-            let message = RtmpMessage::Abort {
-                header: RtmpMessageHeader {
-                    stream_id: RtmpMessageStreamId::PCM,
-                    timestamp: RtmpTimestamp::ZERO,
-                },
-                chunk_stream_id,
-            };
-            roundtrip_test(message)?;
-        }
-    }
-
-    /// タイムスタンプ境界値テスト
-    /// RTMP 仕様: 拡張タイムスタンプは 0xFFFFFF 以上で使用
-    #[test]
-    fn timestamp_boundary(
-        timestamp_ms in prop_oneof![
-            Just(0u32),
-            Just(0xFFFFFEu32),   // 拡張タイムスタンプ直前
-            Just(0xFFFFFFu32),   // 拡張タイムスタンプ境界
-            Just(0x1000000u32),  // 拡張タイムスタンプ
-            Just(0xFFFFFFFFu32), // 最大値
-        ]
-    ) {
+/// タイムスタンプの境界値を roundtrip で検証する
+///
+/// RTMP 仕様: 拡張タイムスタンプは 0xFFFFFF 以上で使用する
+#[test]
+fn timestamp_boundary() -> noprop::TestResult {
+    let seed = noprop::seed_from_env_or_time(SEED_ENV)?;
+    noprop::Runner::new(seed).run(BOUNDARY_CASES, |ctx: &mut TestCaseContext| {
+        let timestamp_ms = noprop::sample_choice(
+            ctx,
+            // 0 / 拡張タイムスタンプ直前 / 拡張タイムスタンプ境界 / 拡張タイムスタンプ / 最大値
+            &[0u32, 0xFFFFFE, 0xFFFFFF, 0x1000000, 0xFFFFFFFF],
+        );
         let message = RtmpMessage::Ack {
             header: RtmpMessageHeader {
                 stream_id: RtmpMessageStreamId::PCM,
@@ -706,8 +852,10 @@ proptest! {
             },
             sequence_number: 12345,
         };
-        roundtrip_test(message)?;
-    }
+        roundtrip_test(message);
+        Ok(())
+    })?;
+    Ok(())
 }
 
 // =============================================================================
@@ -715,8 +863,13 @@ proptest! {
 // =============================================================================
 
 /// encode → decode の roundtrip テストを行う
-fn roundtrip_test(message: RtmpMessage) -> Result<(), TestCaseError> {
-    let chunk_stream_id = RtmpChunkStreamId::new(3).expect("infallible");
+///
+/// # パニック
+///
+/// エンコード済みメッセージのデコードに失敗した場合、または roundtrip の結果が
+/// 元のメッセージと一致しない場合にパニックする。
+fn roundtrip_test(message: RtmpMessage) {
+    let chunk_stream_id = RtmpChunkStreamId::new(3).expect("3 は有効なチャンクストリーム ID");
     let mut encoder = RtmpMessageEncoder::default();
     let mut buf = Vec::new();
 
@@ -726,14 +879,16 @@ fn roundtrip_test(message: RtmpMessage) -> Result<(), TestCaseError> {
     decoder.feed_buf(&buf);
     let decoded = decoder
         .decode()
-        .map_err(|e| TestCaseError::fail(format!("decode failed: {e:?}")))?
-        .ok_or_else(|| TestCaseError::fail("decoded message is None"))?;
+        .expect("エンコード済みメッセージのデコードは失敗しない")
+        .expect("エンコード済みメッセージが 1 つ存在する");
 
-    prop_assert_eq!(decoded, message, "roundtrip value mismatch");
-    Ok(())
+    assert_eq!(
+        decoded, message,
+        "encode/decode の roundtrip 結果が一致しない"
+    );
 }
 
-/// RtmpMessage が NaN を含むかどうかをチェック
+/// RtmpMessage が NaN を含むかどうかをチェックする
 fn contains_nan(message: &RtmpMessage) -> bool {
     match message {
         RtmpMessage::Command { object, args, .. } => {
@@ -744,6 +899,7 @@ fn contains_nan(message: &RtmpMessage) -> bool {
     }
 }
 
+/// AmfValue が NaN を含むかどうかをチェックする
 fn contains_nan_amf(value: &AmfValue) -> bool {
     match value {
         AmfValue::Amf0(v) => contains_nan_amf0(v),
@@ -751,6 +907,7 @@ fn contains_nan_amf(value: &AmfValue) -> bool {
     }
 }
 
+/// Amf0Value が NaN を含むかどうかをチェックする
 fn contains_nan_amf0(value: &Amf0Value) -> bool {
     match value {
         Amf0Value::Number(n) => n.is_nan(),
@@ -762,6 +919,7 @@ fn contains_nan_amf0(value: &Amf0Value) -> bool {
     }
 }
 
+/// Amf3Value が NaN を含むかどうかをチェックする
 fn contains_nan_amf3(value: &Amf3Value) -> bool {
     match value {
         Amf3Value::Double(n) => n.is_nan(),

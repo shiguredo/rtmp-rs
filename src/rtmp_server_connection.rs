@@ -1,3 +1,5 @@
+//! RTMP サーバー接続の状態遷移を提供するモジュール
+
 use alloc::borrow::ToOwned;
 use alloc::collections::VecDeque;
 
@@ -173,7 +175,7 @@ impl RtmpServerConnection {
         &mut self,
         command: crate::rtmp_command::RtmpGetStreamLengthCommand,
     ) -> Result<(), Error> {
-        // Always reply with stream length of 0
+        // ストリーム長は常に 0 を返す
         let message = RtmpCommand::Result(RtmpResultCommand::get_stream_length_result(
             command.transaction_id,
             0.0,
@@ -261,7 +263,7 @@ impl RtmpServerConnection {
 
         // 相手から送信してくるデータに対する（こちらからの） ACK の間隔の要望（ヒント）を指定する
         //
-        // [NOTE] これへの返信として、相手からの win ack size を受信したタイミングで、こちらからの ACK の間隔が確定する
+        // [補足] これへの返信として、相手からの win ack size を受信したタイミングで、こちらからの ACK の間隔が確定する
         self.message_channel
             .feed_send_message(RtmpMessage::set_peer_bandwidth(
                 self.options.ack_window_size,

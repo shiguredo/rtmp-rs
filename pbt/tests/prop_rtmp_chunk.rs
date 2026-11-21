@@ -1,135 +1,133 @@
 //! RTMP Chunk の Property-Based Testing
 
-use proptest::prelude::*;
-use shiguredo_rtmp::tests::{
-    RtmpChunk, RtmpChunkDecoder, RtmpChunkEncoder, RtmpChunkStreamId, RtmpMessageStreamId,
-    RtmpMessageType, RtmpTimestamp,
-};
+use noprop::TestCaseContext;
+use shiguredo_rtmp::rtmp_chunk::{RtmpChunk, RtmpChunkSize, RtmpChunkStreamId};
+use shiguredo_rtmp::rtmp_chunk_decoder::RtmpChunkDecoder;
+use shiguredo_rtmp::rtmp_chunk_encoder::RtmpChunkEncoder;
+use shiguredo_rtmp::rtmp_message::{RtmpMessageStreamId, RtmpMessageType};
+use shiguredo_rtmp::rtmp_timestamp::RtmpTimestamp;
 
-/// RtmpChunkStreamId の有効範囲 [2, 65599] の値を生成する Strategy
-fn arb_chunk_stream_id() -> impl Strategy<Value = RtmpChunkStreamId> {
-    prop_oneof![
-        // 1 バイトエンコード範囲 (2-63)
-        (2u32..=63).prop_map(|id| RtmpChunkStreamId::new(id).expect("infallible")),
-        // 2 バイトエンコード範囲 (64-319)
-        (64u32..=319).prop_map(|id| RtmpChunkStreamId::new(id).expect("infallible")),
-        // 3 バイトエンコード範囲 (320-65599)
-        (320u32..=65599).prop_map(|id| RtmpChunkStreamId::new(id).expect("infallible")),
-    ]
+/// このファイルの PBT ケース数
+const CASES: usize = 1000;
+
+/// 乱数シードを取得する環境変数名
+const SEED_ENV: &str = "RTMP_RS_PBT_SEED";
+
+/// チャンクストリーム ID の有効範囲 [2, 65599] の値を生成する
+fn sample_chunk_stream_id(ctx: &mut TestCaseContext) -> RtmpChunkStreamId {
+    // 基本ヘッダーのエンコード幅ごとに分岐し、1 バイト・2 バイト・3 バイトの
+    // すべての表現を均等に踏むようにする
+    let id = match noprop::sample_weighted_index(ctx, &[1, 1, 1]) {
+        0 => noprop::sample_u32_in(ctx, 2..=63),
+        1 => noprop::sample_u32_in(ctx, 64..=319),
+        _ => noprop::sample_u32_in(ctx, 320..=65599),
+    };
+    RtmpChunkStreamId::new(id).expect("サンプリングした範囲のチャンクストリーム ID は有効")
 }
 
-/// RtmpChunkStreamId の境界値を生成する Strategy
-fn arb_chunk_stream_id_boundary() -> impl Strategy<Value = RtmpChunkStreamId> {
-    prop_oneof![
-        Just(RtmpChunkStreamId::new(2).expect("infallible")), // MIN
-        Just(RtmpChunkStreamId::new(63).expect("infallible")), // 1 バイト上限
-        Just(RtmpChunkStreamId::new(64).expect("infallible")), // 2 バイト下限
-        Just(RtmpChunkStreamId::new(319).expect("infallible")), // 2 バイト上限
-        Just(RtmpChunkStreamId::new(320).expect("infallible")), // 3 バイト下限
-        Just(RtmpChunkStreamId::new(65599).expect("infallible")), // MAX
-    ]
-}
-
-/// RtmpMessageType を生成する Strategy
-fn arb_message_type() -> impl Strategy<Value = RtmpMessageType> {
-    prop_oneof![
-        Just(RtmpMessageType::SetChunkSize),
-        Just(RtmpMessageType::Abort),
-        Just(RtmpMessageType::Ack),
-        Just(RtmpMessageType::UserControl),
-        Just(RtmpMessageType::WinAckSize),
-        Just(RtmpMessageType::SetPeerBandwidth),
-        Just(RtmpMessageType::Audio),
-        Just(RtmpMessageType::Video),
-        Just(RtmpMessageType::DataAmf3),
-        Just(RtmpMessageType::CommandAmf3),
-        Just(RtmpMessageType::DataAmf0),
-        Just(RtmpMessageType::CommandAmf0),
-    ]
-}
-
-/// タイムスタンプを生成する Strategy（ミリ秒単位）
-fn arb_timestamp() -> impl Strategy<Value = RtmpTimestamp> {
-    prop_oneof![
-        // 通常タイムスタンプ (0 - 0xFFFFFE)
-        (0u32..=0xFFFFFE).prop_map(RtmpTimestamp::from_millis),
-        // 拡張タイムスタンプ境界付近
-        (0xFFFFFFu32..=0x1FFFFFFu32).prop_map(RtmpTimestamp::from_millis),
-    ]
-}
-
-/// タイムスタンプの境界値を生成する Strategy
-fn arb_timestamp_boundary() -> impl Strategy<Value = RtmpTimestamp> {
-    prop_oneof![
-        Just(RtmpTimestamp::ZERO),
-        Just(RtmpTimestamp::from_millis(0xFFFFFE)), // 拡張タイムスタンプ直前
-        Just(RtmpTimestamp::from_millis(0xFFFFFF)), // 拡張タイムスタンプ境界
-        Just(RtmpTimestamp::from_millis(0x1000000)), // 拡張タイムスタンプ
-        Just(RtmpTimestamp::from_millis(0x12345678)), // 大きな拡張タイムスタンプ
-    ]
-}
-
-/// ペイロードを生成する Strategy
-fn arb_payload() -> impl Strategy<Value = Vec<u8>> {
-    prop_oneof![
-        // 空ペイロード
-        Just(vec![]),
-        // 小さいペイロード (1-127 バイト)
-        prop::collection::vec(any::<u8>(), 1..=127),
-        // デフォルトチャンクサイズ (128 バイト) 付近
-        prop::collection::vec(any::<u8>(), 128..=256),
-        // 大きいペイロード (512-1024 バイト)
-        prop::collection::vec(any::<u8>(), 512..=1024),
-    ]
-}
-
-/// RtmpChunk を生成する Strategy
-fn arb_chunk() -> impl Strategy<Value = RtmpChunk> {
-    (
-        arb_chunk_stream_id(),
-        any::<u32>(),
-        arb_message_type(),
-        arb_timestamp(),
-        arb_payload(),
+/// チャンクストリーム ID の境界値を生成する
+fn sample_chunk_stream_id_boundary(ctx: &mut TestCaseContext) -> RtmpChunkStreamId {
+    noprop::sample_choice(
+        ctx,
+        &[
+            RtmpChunkStreamId::new(2).expect("2 はチャンクストリーム ID の最小値"),
+            RtmpChunkStreamId::new(63).expect("63 は 1 バイト表現の上限"),
+            RtmpChunkStreamId::new(64).expect("64 は 2 バイト表現の下限"),
+            RtmpChunkStreamId::new(319).expect("319 は 2 バイト表現の上限"),
+            RtmpChunkStreamId::new(320).expect("320 は 3 バイト表現の下限"),
+            RtmpChunkStreamId::new(65599).expect("65599 はチャンクストリーム ID の最大値"),
+        ],
     )
-        .prop_map(
-            |(chunk_stream_id, message_stream_id, message_type, timestamp, payload)| RtmpChunk {
-                chunk_stream_id,
-                message_stream_id: RtmpMessageStreamId::new(message_stream_id),
-                message_type,
-                timestamp,
-                payload,
-            },
-        )
 }
 
-/// 境界値を重視した RtmpChunk を生成する Strategy
-fn arb_chunk_boundary() -> impl Strategy<Value = RtmpChunk> {
-    (
-        arb_chunk_stream_id_boundary(),
-        any::<u32>(),
-        arb_message_type(),
-        arb_timestamp_boundary(),
-        arb_payload(),
+/// メッセージ型を生成する
+fn sample_message_type(ctx: &mut TestCaseContext) -> RtmpMessageType {
+    noprop::sample_choice(
+        ctx,
+        &[
+            RtmpMessageType::SetChunkSize,
+            RtmpMessageType::Abort,
+            RtmpMessageType::Ack,
+            RtmpMessageType::UserControl,
+            RtmpMessageType::WinAckSize,
+            RtmpMessageType::SetPeerBandwidth,
+            RtmpMessageType::Audio,
+            RtmpMessageType::Video,
+            RtmpMessageType::DataAmf3,
+            RtmpMessageType::CommandAmf3,
+            RtmpMessageType::DataAmf0,
+            RtmpMessageType::CommandAmf0,
+        ],
     )
-        .prop_map(
-            |(chunk_stream_id, message_stream_id, message_type, timestamp, payload)| RtmpChunk {
-                chunk_stream_id,
-                message_stream_id: RtmpMessageStreamId::new(message_stream_id),
-                message_type,
-                timestamp,
-                payload,
-            },
-        )
 }
 
-/// エンコードされたバッファから1つのメッセージを完全にデコードする
-fn decode_one_message(decoder: &mut RtmpChunkDecoder, buf: &[u8]) -> (usize, Option<RtmpChunk>) {
+/// タイムスタンプを生成する
+fn sample_timestamp(ctx: &mut TestCaseContext) -> RtmpTimestamp {
+    // 通常のタイムスタンプと拡張タイムスタンプの境界付近を半々で生成する
+    let millis = match noprop::sample_weighted_index(ctx, &[1, 1]) {
+        0 => noprop::sample_u32_in(ctx, 0..=0x00FF_FFFE),
+        _ => noprop::sample_u32_in(ctx, 0x00FF_FFFF..=0x01FF_FFFF),
+    };
+    RtmpTimestamp::from_millis(millis)
+}
+
+/// タイムスタンプの境界値を生成する
+fn sample_timestamp_boundary(ctx: &mut TestCaseContext) -> RtmpTimestamp {
+    noprop::sample_choice(
+        ctx,
+        &[
+            RtmpTimestamp::ZERO,
+            RtmpTimestamp::from_millis(0x00FF_FFFE),
+            RtmpTimestamp::from_millis(0x00FF_FFFF),
+            RtmpTimestamp::from_millis(0x0100_0000),
+            RtmpTimestamp::from_millis(0x1234_5678),
+        ],
+    )
+}
+
+/// ペイロードを生成する
+fn sample_payload(ctx: &mut TestCaseContext) -> Vec<u8> {
+    // 空・小さい・既定チャンクサイズ付近・大きい、の 4 種類を均等に生成する
+    let len = match noprop::sample_weighted_index(ctx, &[1, 1, 1, 1]) {
+        0 => 0,
+        1 => noprop::sample_usize_in(ctx, 1..=127),
+        2 => noprop::sample_usize_in(ctx, 128..=256),
+        _ => noprop::sample_usize_in(ctx, 512..=1024),
+    };
+    noprop::sample_bytes_vec(ctx, len)
+}
+
+/// 任意のチャンクを生成する
+fn sample_chunk(ctx: &mut TestCaseContext) -> RtmpChunk {
+    RtmpChunk {
+        chunk_stream_id: sample_chunk_stream_id(ctx),
+        message_stream_id: RtmpMessageStreamId::new(noprop::sample_u32(ctx)),
+        message_type: sample_message_type(ctx),
+        timestamp: sample_timestamp(ctx),
+        payload: sample_payload(ctx),
+    }
+}
+
+/// 境界値を重視したチャンクを生成する
+fn sample_chunk_boundary(ctx: &mut TestCaseContext) -> RtmpChunk {
+    RtmpChunk {
+        chunk_stream_id: sample_chunk_stream_id_boundary(ctx),
+        message_stream_id: RtmpMessageStreamId::new(noprop::sample_u32(ctx)),
+        message_type: sample_message_type(ctx),
+        timestamp: sample_timestamp_boundary(ctx),
+        payload: sample_payload(ctx),
+    }
+}
+
+/// エンコードされたバッファから 1 つのチャンクを完全にデコードする
+fn decode_one_chunk(decoder: &mut RtmpChunkDecoder, buf: &[u8]) -> (usize, Option<RtmpChunk>) {
     let mut total_consumed = 0;
     let mut remaining = buf;
 
     loop {
-        let (size, maybe_chunk) = decoder.decode(remaining).expect("decode should succeed");
+        let (size, maybe_chunk) = decoder
+            .decode(remaining)
+            .expect("エンコードしたデータのデコードは失敗しない");
         total_consumed += size;
         remaining = &remaining[size..];
 
@@ -143,47 +141,78 @@ fn decode_one_message(decoder: &mut RtmpChunkDecoder, buf: &[u8]) -> (usize, Opt
     }
 }
 
-proptest! {
-    #![proptest_config(ProptestConfig::with_cases(1000))]
+/// decode(encode(chunk)) が元のチャンクと一致することを検証する
+#[test]
+fn chunk_roundtrip() -> noprop::TestResult {
+    let seed = noprop::seed_from_env_or_time(SEED_ENV)?;
+    noprop::Runner::new(seed).run(CASES, |ctx: &mut TestCaseContext| {
+        let chunk = sample_chunk(ctx);
 
-    /// Roundtrip: decode(encode(chunk)) == chunk
-    #[test]
-    fn chunk_roundtrip(chunk in arb_chunk()) {
         let mut encoder = RtmpChunkEncoder::default();
         let mut buf = Vec::new();
         encoder.encode(&mut buf, &chunk);
 
         let mut decoder = RtmpChunkDecoder::default();
-        let (size, decoded) = decode_one_message(&mut decoder, &buf);
+        let (size, decoded) = decode_one_chunk(&mut decoder, &buf);
 
-        prop_assert!(decoded.is_some(), "decoded chunk should not be None");
-        let decoded = decoded.expect("decoded chunk must exist");
+        let decoded = decoded.expect("デコード結果のチャンクが存在しない");
+        assert_eq!(decoded, chunk, "ラウンドトリップしたチャンクが一致しない");
+        assert_eq!(size, buf.len(), "デコーダがすべてのバイトを消費していない");
+        Ok(())
+    })?;
+    Ok(())
+}
 
-        prop_assert_eq!(&decoded, &chunk, "roundtrip should preserve chunk data");
-        prop_assert_eq!(size, buf.len(), "decoder should consume all bytes");
-    }
+/// 境界値のチャンクでも roundtrip が成立することを検証する
+#[test]
+fn chunk_boundary_roundtrip() -> noprop::TestResult {
+    let seed = noprop::seed_from_env_or_time(SEED_ENV)?;
+    noprop::Runner::new(seed).run(CASES, |ctx: &mut TestCaseContext| {
+        let chunk = sample_chunk_boundary(ctx);
 
-    /// 境界値の Roundtrip
-    #[test]
-    fn chunk_boundary_roundtrip(chunk in arb_chunk_boundary()) {
         let mut encoder = RtmpChunkEncoder::default();
         let mut buf = Vec::new();
         encoder.encode(&mut buf, &chunk);
 
         let mut decoder = RtmpChunkDecoder::default();
-        let (size, decoded) = decode_one_message(&mut decoder, &buf);
+        let (size, decoded) = decode_one_chunk(&mut decoder, &buf);
 
-        prop_assert!(decoded.is_some(), "decoded chunk should not be None");
-        let decoded = decoded.expect("decoded chunk must exist");
+        let decoded = decoded.expect("デコード結果のチャンクが存在しない");
+        assert_eq!(decoded, chunk, "ラウンドトリップしたチャンクが一致しない");
+        assert_eq!(size, buf.len(), "デコーダがすべてのバイトを消費していない");
+        Ok(())
+    })?;
+    Ok(())
+}
 
-        prop_assert_eq!(&decoded, &chunk, "roundtrip should preserve chunk data");
-        prop_assert_eq!(size, buf.len(), "decoder should consume all bytes");
-    }
+/// 任意の値についてチャンクストリーム ID の有効範囲が守られることを検証する
+#[test]
+fn chunk_stream_id_valid_range() -> noprop::TestResult {
+    let seed = noprop::seed_from_env_or_time(SEED_ENV)?;
+    noprop::Runner::new(seed).run(CASES, |ctx: &mut TestCaseContext| {
+        let id = noprop::sample_u32(ctx);
+        let parsed = RtmpChunkStreamId::new(id);
+        if (2..=65599).contains(&id) {
+            let parsed = parsed.expect("有効範囲の値はチャンクストリーム ID として受理される");
+            assert_eq!(parsed.get(), id, "チャンクストリーム ID の値が一致しない");
+        } else {
+            assert!(
+                parsed.is_none(),
+                "有効範囲外の値 {id} がチャンクストリーム ID として受理された"
+            );
+        }
+        Ok(())
+    })?;
+    Ok(())
+}
 
-    /// チャンクストリーム ID のエンコードサイズが正しいことを検証
-    #[test]
-    fn chunk_stream_id_encoding_size(id in 2u32..=65599u32) {
-        let chunk_stream_id = RtmpChunkStreamId::new(id).expect("infallible");
+/// チャンクストリーム ID のエンコードサイズが仕様どおりであることを検証する
+#[test]
+fn chunk_stream_id_encoding_size() -> noprop::TestResult {
+    let seed = noprop::seed_from_env_or_time(SEED_ENV)?;
+    noprop::Runner::new(seed).run(CASES, |ctx: &mut TestCaseContext| {
+        let id = noprop::sample_u32_in(ctx, 2..=65599);
+        let chunk_stream_id = RtmpChunkStreamId::new(id).expect("サンプリングした範囲の ID は有効");
         let chunk = RtmpChunk {
             chunk_stream_id,
             message_stream_id: RtmpMessageStreamId::PCM,
@@ -196,8 +225,8 @@ proptest! {
         let mut buf = Vec::new();
         encoder.encode(&mut buf, &chunk);
 
-        // Basic Header のサイズを検証
-        // Format 0 の Message Header は 11 バイト固定
+        // 基本ヘッダーのサイズを検証する。
+        // 形式 0 のメッセージヘッダーは 11 バイト固定。
         let expected_basic_header_size = if id < 64 {
             1
         } else if id < 320 {
@@ -205,19 +234,26 @@ proptest! {
         } else {
             3
         };
+        let expected_total_size = expected_basic_header_size + 11;
+        assert_eq!(
+            buf.len(),
+            expected_total_size,
+            "チャンクストリーム ID {id} の基本ヘッダーサイズが期待値と一致しない"
+        );
+        Ok(())
+    })?;
+    Ok(())
+}
 
-        let expected_total_size = expected_basic_header_size + 11; // Basic Header + Message Header (F0)
-        prop_assert_eq!(buf.len(), expected_total_size,
-            "chunk stream id {} should use {} byte basic header",
-            id, expected_basic_header_size);
-    }
-
-    /// 拡張タイムスタンプのエンコードを検証
-    #[test]
-    fn extended_timestamp_encoding(timestamp_ms in 0u32..=0x2000000u32) {
+/// 拡張タイムスタンプのエンコードを検証する
+#[test]
+fn extended_timestamp_encoding() -> noprop::TestResult {
+    let seed = noprop::seed_from_env_or_time(SEED_ENV)?;
+    noprop::Runner::new(seed).run(CASES, |ctx: &mut TestCaseContext| {
+        let timestamp_ms = noprop::sample_u32_in(ctx, 0..=0x0200_0000);
         let timestamp = RtmpTimestamp::from_millis(timestamp_ms);
         let chunk = RtmpChunk {
-            chunk_stream_id: RtmpChunkStreamId::new(4).expect("infallible"),
+            chunk_stream_id: RtmpChunkStreamId::new(4).expect("4 は有効なチャンクストリーム ID"),
             message_stream_id: RtmpMessageStreamId::PCM,
             message_type: RtmpMessageType::Ack,
             timestamp,
@@ -229,34 +265,36 @@ proptest! {
         encoder.encode(&mut buf, &chunk);
 
         // 拡張タイムスタンプが必要かどうかで期待サイズが変わる
-        let uses_extended = timestamp_ms >= 0xFFFFFF;
-        let expected_size = if uses_extended {
-            1 + 11 + 4 // Basic Header + Message Header (F0) + Extended Timestamp
-        } else {
-            1 + 11 // Basic Header + Message Header (F0)
-        };
+        let uses_extended = timestamp_ms >= 0x00FF_FFFF;
+        let expected_size = if uses_extended { 1 + 11 + 4 } else { 1 + 11 };
+        assert_eq!(
+            buf.len(),
+            expected_size,
+            "タイムスタンプ {timestamp_ms} のエンコードサイズが期待値と一致しない"
+        );
+        Ok(())
+    })?;
+    Ok(())
+}
 
-        prop_assert_eq!(buf.len(), expected_size,
-            "timestamp {} should {}use extended timestamp",
-            timestamp_ms, if uses_extended { "" } else { "not " });
-    }
+/// 同じストリームで連続したチャンクの roundtrip を検証する
+#[test]
+fn consecutive_chunks_roundtrip() -> noprop::TestResult {
+    let seed = noprop::seed_from_env_or_time(SEED_ENV)?;
+    noprop::Runner::new(seed).run(CASES, |ctx: &mut TestCaseContext| {
+        let chunk1 = sample_chunk(ctx);
+        let timestamp_delta = noprop::sample_u32_in(ctx, 0..1000);
+        let payload = sample_payload(ctx);
 
-    /// 連続したチャンクの Roundtrip
-    #[test]
-    fn consecutive_chunks_roundtrip(
-        chunk1 in arb_chunk(),
-        chunk2_timestamp_delta in 0u32..1000u32,
-        chunk2_payload in arb_payload(),
-    ) {
-        // 同じストリームで連続するチャンクを作成
+        // 同じストリームで連続するチャンクを作成する
         let chunk2 = RtmpChunk {
             chunk_stream_id: chunk1.chunk_stream_id,
             message_stream_id: chunk1.message_stream_id,
             message_type: chunk1.message_type,
             timestamp: chunk1
                 .timestamp
-                .wrapping_add(RtmpTimestamp::from_millis(chunk2_timestamp_delta)),
-            payload: chunk2_payload,
+                .wrapping_add(RtmpTimestamp::from_millis(timestamp_delta)),
+            payload,
         };
 
         let mut encoder = RtmpChunkEncoder::default();
@@ -269,59 +307,44 @@ proptest! {
         let mut remaining = buf.as_slice();
 
         while !remaining.is_empty() {
-            let (size, maybe_chunk) = decoder.decode(remaining).expect("decode should succeed");
+            let (size, maybe_chunk) = decoder
+                .decode(remaining)
+                .expect("エンコードしたデータのデコードは失敗しない");
             remaining = &remaining[size..];
             if let Some(chunk) = maybe_chunk {
                 decoded_chunks.push(chunk);
             }
         }
 
-        prop_assert_eq!(decoded_chunks.len(), 2, "should decode exactly 2 chunks");
-        prop_assert_eq!(&decoded_chunks[0], &chunk1);
-        prop_assert_eq!(&decoded_chunks[1], &chunk2);
-    }
+        assert_eq!(
+            decoded_chunks.len(),
+            2,
+            "デコードしたチャンク数が一致しない"
+        );
+        assert_eq!(decoded_chunks[0], chunk1, "1 つ目のチャンクが一致しない");
+        assert_eq!(decoded_chunks[1], chunk2, "2 つ目のチャンクが一致しない");
+        Ok(())
+    })?;
+    Ok(())
 }
 
-#[cfg(test)]
-mod additional_tests {
-    use super::*;
-
-    #[test]
-    fn chunk_stream_id_min() {
-        let id = RtmpChunkStreamId::new(2).expect("infallible");
-        assert_eq!(id.get(), 2);
-    }
-
-    #[test]
-    fn chunk_stream_id_max() {
-        let id = RtmpChunkStreamId::new(65599).expect("infallible");
-        assert_eq!(id.get(), 65599);
-    }
-
-    #[test]
-    fn chunk_stream_id_out_of_range() {
-        assert!(RtmpChunkStreamId::new(1).is_none());
-        assert!(RtmpChunkStreamId::new(65600).is_none());
-    }
-
-    #[test]
-    fn empty_payload_roundtrip() {
-        let chunk = RtmpChunk {
-            chunk_stream_id: RtmpChunkStreamId::new(4).expect("infallible"),
-            message_stream_id: RtmpMessageStreamId::PCM,
-            message_type: RtmpMessageType::Ack,
-            timestamp: RtmpTimestamp::ZERO,
-            payload: vec![],
-        };
-
-        let mut encoder = RtmpChunkEncoder::default();
-        let mut buf = Vec::new();
-        encoder.encode(&mut buf, &chunk);
-
-        let mut decoder = RtmpChunkDecoder::default();
-        let (_, decoded) = decoder
-            .decode(&buf)
-            .expect("decode must not fail for encoded chunk");
-        assert_eq!(decoded.expect("decoded chunk must exist"), chunk);
-    }
+/// チャンクサイズの境界値が正しく扱われることを検証する
+#[test]
+fn chunk_size_valid_range() -> noprop::TestResult {
+    let seed = noprop::seed_from_env_or_time(SEED_ENV)?;
+    noprop::Runner::new(seed).run(CASES, |ctx: &mut TestCaseContext| {
+        let size = noprop::sample_usize_in(ctx, 0..=65537);
+        let parsed = RtmpChunkSize::new(size);
+        if (1..=65536).contains(&size) {
+            let parsed = parsed.expect("有効範囲の値はチャンクサイズとして受理される");
+            assert_eq!(parsed.get(), size, "チャンクサイズの値が一致しない");
+        } else {
+            assert!(
+                parsed.is_none(),
+                "有効範囲外の値 {size} がチャンクサイズとして受理された"
+            );
+        }
+        Ok(())
+    })?;
+    Ok(())
 }

@@ -1,5 +1,4 @@
-// AMF0 の詳細は仕様書を参照（このモジュールは `missing_docs` を抑制する）
-#![allow(missing_docs)]
+//! AMF0（Action Message Format 0）の値型とエンコード・デコード処理を提供するモジュール
 
 use alloc::string::String;
 use alloc::vec::Vec;
@@ -29,32 +28,88 @@ const MARKER_XML_DOCUMENT: u8 = 0x0F;
 const MARKER_TYPED_OBJECT: u8 = 0x10;
 const MARKER_AVMPLUS_OBJECT: u8 = 0x11;
 
+/// AMF0 の値を表す型
+///
+/// AMF0 仕様（Action Message Format -- AMF 0）で定義された型マーカーのうち、
+/// 値を保持できるものに対応する variant を持つ。
+/// 未対応の型マーカーと、デコード時にエラーとなる条件は [`Amf0Value::decode`] を参照する。
 #[derive(Debug, Clone, PartialEq, PartialOrd)]
 pub enum Amf0Value {
+    /// 数値（型マーカー 0x00、IEEE 754 倍精度浮動小数点数）
     Number(f64),
+
+    /// 真偽値（型マーカー 0x01）
     Boolean(bool),
+
+    /// 文字列（型マーカー 0x02、または 65535 バイトを超える場合は Long String の 0x0C）
     String(String),
+
+    /// オブジェクト（型マーカー 0x03）または型付きオブジェクト（型マーカー 0x10）
     Object {
-        // `None` は無名オブジェクトであることを示す
+        /// クラス名。`None` なら無名オブジェクト、`Some` なら型付きオブジェクトを表す
         class_name: Option<String>,
+
+        /// メンバーの一覧
         entries: Vec<Pair<String, Self>>,
     },
+
+    /// null（型マーカー 0x05）
     Null,
+
+    /// 未定義値（型マーカー 0x06）
     Undefined,
+
+    /// ECMA 配列（型マーカー 0x08）
     EcmaArray {
+        /// メンバーの一覧
+        ///
+        /// AMF0 仕様では先頭に要素数のフィールドがあるが、デコード時はこの値を無視し、
+        /// 終端マーカーが現れるまでメンバーを読み取る。
+        /// エンコード時はメンバーの個数を要素数として出力する。
         entries: Vec<Pair<String, Self>>,
     },
+
+    /// 固定長配列（型マーカー 0x0A）
     Array {
+        /// 要素の一覧
         entries: Vec<Self>,
     },
+
+    /// 日時（型マーカー 0x0B）
     Date {
+        /// UNIX エポックからの経過時間
+        ///
+        /// AMF0 ではミリ秒単位の値として表現するため、エンコード時はミリ秒未満を切り捨てる。
         unix_time: Duration,
     },
+
+    /// XML ドキュメント（型マーカー 0x0F）
     XmlDocument(String),
+
+    /// AVM+ オブジェクト（型マーカー 0x11）
+    ///
+    /// AMF0 のストリーム中で、次の 1 つの値を AMF3 形式で表現するための型。
+    /// AMF3 の値を 1 つ読み書きした後は再び AMF0 の形式に戻る
+    /// （Enhanced RTMP 仕様の AMF3 に関する節。リポジトリの `refs/enhanced-rtmp-v2.md` を参照）。
     AvmPlus(Amf3Value),
 }
 
 impl Amf0Value {
+    /// バイト列の先頭から AMF0 の値を 1 つデコードする
+    ///
+    /// 戻り値はデコードに使用したバイト数とデコードした値の組になる。
+    /// 入力の先頭を型マーカーとして解釈し、続くデータを型に応じて読み取る。
+    ///
+    /// # エラー
+    ///
+    /// 次の場合はエラーを返す。
+    ///
+    /// - 型マーカーや長さ、値の読み取りに必要なバイト数が足りない場合
+    /// - 未知の型マーカーが現れた場合
+    /// - MovieClip（0x04）、Unsupported（0x0D）、Recordset（0x0E）の型マーカーが現れた場合
+    /// - 参照番号が範囲外である場合や循環参照が現れた場合
+    /// - 日時の値が有限の非負値でない場合や、予約フィールドのタイムゾーンが 0 でない場合
+    /// - 文字列が不正な UTF-8 である場合
     pub fn decode(buf: &[u8]) -> Result<(usize, Self), Error> {
         let original_buf_len = buf.len();
         let mut decoder = Decoder {
@@ -65,6 +120,17 @@ impl Amf0Value {
         Ok((original_buf_len - decoder.buf.len(), value))
     }
 
+    /// AMF0 の値をエンコードして `buf` の末尾に追記する
+    ///
+    /// variant に応じた型マーカーとデータを出力する。
+    /// 文字列はバイト長が 65535 以下なら String（0x02）、それより長ければ Long String（0x0C）として出力する。
+    /// 参照（0x07）は出力しないため、同じ値が複数現れてもそれぞれ独立した値としてエンコードされる。
+    /// メンバーのキーとクラス名の長さは `u16` で出力するため、65535 バイトを超える値は表現できない。
+    ///
+    /// # パニック
+    ///
+    /// [`Amf0Value::AvmPlus`] に含まれる AMF3 の整数が `-2^28` より大きく `2^28` 未満の
+    /// 範囲に収まっていない場合はパニックする。
     pub fn encode(&self, buf: &mut Vec<u8>) {
         let mut encoder = Encoder { buf };
         encoder.encode_value(self);
@@ -174,7 +240,7 @@ impl Decoder<'_> {
             .ok_or_else(|| Error::invalid_data(format!("reference index out of range: {index}")))?;
 
         if *v == Amf0Value::Null {
-            // [NOTE] この crate では循環参照は未対応（実用的にはこれでまず問題ない）
+            // [補足] このクレートでは循環参照は未対応（実用的にはこれでまず問題ない）
             return Err(Error::unsupported(format!(
                 "circular reference at index {index}"
             )));
@@ -283,7 +349,8 @@ impl<'a> Encoder<'a> {
     fn encode_date(&mut self, unix_time: Duration) {
         self.buf.write_u8(MARKER_DATE);
         self.buf.write_f64(unix_time.as_millis() as f64);
-        self.buf.write_u16(0); // time_zone は常に 0 (reserved field)
+        // time_zone は予約フィールドのため常に 0 を書き込む
+        self.buf.write_u16(0);
     }
 
     fn encode_strict_array(&mut self, entries: &[Amf0Value]) {
@@ -338,7 +405,8 @@ impl<'a> Encoder<'a> {
             self.buf.write_bytes(pair.key.as_bytes());
             self.encode_value(&pair.value);
         }
-        self.buf.write_u16(0); // 空のキーは終端を意味する
+        // 空のキーは終端を意味する
+        self.buf.write_u16(0);
         self.buf.write_u8(MARKER_OBJECT_END_MARKER);
     }
 }

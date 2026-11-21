@@ -1,7 +1,7 @@
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;
-use shiguredo_rtmp::tests::RtmpChunkDecoder;
+use shiguredo_rtmp::rtmp_chunk_decoder::RtmpChunkDecoder;
 
 fuzz_target!(|data: &[u8]| {
     let mut decoder = RtmpChunkDecoder::default();

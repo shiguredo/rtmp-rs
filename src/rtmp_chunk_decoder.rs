@@ -1,3 +1,8 @@
+//! RTMP のチャンクをバイト列からデコードするモジュール
+//!
+//! RTMP 仕様 5.3 節のチャンク形式を解析し、チャンクストリームごとの状態を保持しながら
+//! メッセージを組み立てるデコーダーを提供する。
+
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
 use core::mem;
@@ -8,6 +13,13 @@ use crate::rtmp_chunk::{MessageHeaderFormat, RtmpChunk, RtmpChunkSize, RtmpChunk
 use crate::rtmp_message::{RtmpMessageStreamId, RtmpMessageType};
 use crate::rtmp_timestamp::RtmpTimestamp;
 
+/// RTMP のチャンクをデコードするデコーダー
+///
+/// チャンクストリームごとのメッセージヘッダーの状態と、受信に使用するチャンクサイズを保持する。
+/// [`RtmpChunkDecoder::decode`] に受信データを順次渡すことで、メッセージ単位の
+/// [`RtmpChunk`] を取り出せる。
+/// `Default` 実装で作成した場合、チャンクサイズは RTMP 仕様 5.4.1 節の既定値である
+/// 128 バイトになる。
 #[derive(Debug, Default)]
 pub struct RtmpChunkDecoder {
     chunk_size: RtmpChunkSize,
@@ -15,14 +27,32 @@ pub struct RtmpChunkDecoder {
 }
 
 impl RtmpChunkDecoder {
+    /// 以降のデコードで使用するチャンクサイズを設定する
+    ///
+    /// Set Chunk Size メッセージ（RTMP 仕様 5.4.1 節）を受信した際に、
+    /// そのメッセージで通知された値で呼び出す。既定値は 128 バイト。
     pub fn set_chunk_size(&mut self, size: RtmpChunkSize) {
         self.chunk_size = size;
     }
 
+    /// 指定したチャンクストリームのデコード状態を破棄する
+    ///
+    /// Abort メッセージ（RTMP 仕様 5.4.2 節）を受信した場合など、途中まで受信したメッセージを
+    /// 破棄してチャンクストリームを初期状態に戻すときに呼び出す。
+    /// 破棄後は、次にそのチャンクストリームで形式 0 のチャンクを受信するまでデコードできない。
     pub fn reset_chunk_stream(&mut self, chunk_stream_id: RtmpChunkStreamId) {
         self.chunk_streams.remove(&chunk_stream_id);
     }
 
+    /// バッファーの先頭から 1 チャンクをデコードする
+    ///
+    /// 戻り値は、デコードで消費したバイト数と、メッセージ全体のペイロードが揃った場合の
+    /// [`RtmpChunk`] の組になる。メッセージの受信が途中の場合は、消費したバイト数と
+    /// `None` を返す。呼び出し側は、戻り値のバイト数だけバッファーを進めて再度呼び出す。
+    ///
+    /// チャンクストリームごとに最初のチャンクは形式 0 でなければならず、
+    /// 形式 0 以外のチャンクを先に受信した場合はエラーを返す（RTMP 仕様 5.3.1.2 節）。
+    /// エラーを返した場合、デコーダーの内部状態は更新されない。
     pub fn decode(&mut self, mut buf: &[u8]) -> Result<(usize, Option<RtmpChunk>), Error> {
         let original_buf_len = buf.len();
 
@@ -93,7 +123,7 @@ impl RtmpChunkDecoder {
                 let timestamp = buf.read_u24()?;
                 let message_size = buf.read_u24()? as usize;
                 let message_type = buf.read_u8()?;
-                let message_stream_id = buf.read_u32().map(|v| v.swap_bytes())?; // little endian
+                let message_stream_id = buf.read_u32().map(|v| v.swap_bytes())?; // リトルエンディアン
 
                 let is_extended = timestamp == 0xFFFFFF;
                 chunk_stream.enable_f3_extended_timestamp = is_extended;
@@ -169,7 +199,9 @@ impl RtmpChunkDecoder {
         // RtmpChunkStreamId::new() が許可する範囲は 2..=65599 だけど、
         // 上の if 分岐の条件的に chunk_stream_id の最小値は 2 で、かつ、
         // 最大値は 0xFFFF + 64 = 65599 なので、以下の new() は常に成功する
-        let chunk_stream_id = RtmpChunkStreamId::new(chunk_stream_id).expect("bug");
+        let chunk_stream_id = RtmpChunkStreamId::new(chunk_stream_id).expect(
+            "chunk stream id derived from the basic header is always valid (implementation bug)",
+        );
 
         Ok((format, chunk_stream_id))
     }
@@ -178,7 +210,7 @@ impl RtmpChunkDecoder {
 #[derive(Debug, Clone)]
 struct RtmpChunkStream {
     timestamp: RtmpTimestamp,
-    timestamp_delta: RtmpTimestamp, // [NOTE] ここでは負数は扱わないので RtmpTimestampDelta は使わない
+    timestamp_delta: RtmpTimestamp, // [補足] ここでは負数は扱わないので RtmpTimestampDelta は使わない
     message_type: RtmpMessageType,
     message_stream_id: RtmpMessageStreamId,
     message_size: usize,
@@ -338,7 +370,7 @@ mod tests {
 
     #[test]
     fn decode_extended_timestamp_boundary_fmt0_to_fmt3() {
-        // Test case 1: exactly 0xFFFFFF
+        // テストケース 1: ちょうど 0xFFFFFF
         let timestamp0 = 0xFFFFFFu32;
         let chunk0_0 = RtmpChunk {
             timestamp: RtmpTimestamp::from_millis(timestamp0),
@@ -352,7 +384,7 @@ mod tests {
         let decoded0 = decode_chunks(&encoded0);
         assert_eq!(decoded0, vec![chunk0_0, chunk0_1]);
 
-        // Test case 2: 0xFFFFFF - 1
+        // テストケース 2: 0xFFFFFF - 1
         let timestamp1 = 0xFFFFFEu32;
         let chunk1_0 = RtmpChunk {
             timestamp: RtmpTimestamp::from_millis(timestamp1),
@@ -366,7 +398,7 @@ mod tests {
         let decoded1 = decode_chunks(&encoded1);
         assert_eq!(decoded1, vec![chunk1_0, chunk1_1]);
 
-        // Test case 3: 0xFFFFFF + 1
+        // テストケース 3: 0xFFFFFF + 1
         let timestamp2 = 0x1000000u32;
         let chunk2_0 = RtmpChunk {
             timestamp: RtmpTimestamp::from_millis(timestamp2),
@@ -413,7 +445,7 @@ mod tests {
     fn decode_extended_timestamp_boundary_fmt0_to_fmt1_to_fmt3() {
         let timestamp_base = 300u32;
 
-        // Test case 1: exactly 0xFFFFFF
+        // テストケース 1: ちょうど 0xFFFFFF
         let timestamp_delta0 = 0xFFFFFFu32;
         let chunk0_0 = RtmpChunk {
             timestamp: RtmpTimestamp::from_millis(timestamp_base),
@@ -436,7 +468,7 @@ mod tests {
         let decoded0 = decode_chunks(&encoded0);
         assert_eq!(decoded0, vec![chunk0_0, chunk0_1, chunk0_2]);
 
-        // Test case 2: 0xFFFFFF - 1
+        // テストケース 2: 0xFFFFFF - 1
         let timestamp_delta1 = 0xFFFFFEu32;
         let chunk1_0 = RtmpChunk {
             timestamp: RtmpTimestamp::from_millis(timestamp_base),
@@ -459,7 +491,7 @@ mod tests {
         let decoded1 = decode_chunks(&encoded1);
         assert_eq!(decoded1, vec![chunk1_0, chunk1_1, chunk1_2]);
 
-        // Test case 3: 0xFFFFFF + 1
+        // テストケース 3: 0xFFFFFF + 1
         let timestamp_delta2 = 0x1000000u32;
         let chunk2_0 = RtmpChunk {
             timestamp: RtmpTimestamp::from_millis(timestamp_base),
@@ -487,11 +519,13 @@ mod tests {
     fn decode_multiple_chunk_stream_ids() {
         let chunk0 = input_chunk();
         let chunk1 = RtmpChunk {
-            chunk_stream_id: RtmpChunkStreamId::new(10).expect("valid chunk stream id"),
+            chunk_stream_id: RtmpChunkStreamId::new(10)
+                .expect("チャンクストリーム ID の生成に失敗した"),
             ..chunk0.clone()
         };
         let chunk2 = RtmpChunk {
-            chunk_stream_id: RtmpChunkStreamId::new(100).expect("valid chunk stream id"),
+            chunk_stream_id: RtmpChunkStreamId::new(100)
+                .expect("チャンクストリーム ID の生成に失敗した"),
             ..chunk0.clone()
         };
         let encoded = encode_chunks(&[chunk0.clone(), chunk1.clone(), chunk2.clone()]);
@@ -515,37 +549,37 @@ mod tests {
         };
         let chunk3 = chunk2.clone();
 
-        // Encode with two different chunk sizes
+        // 2 つの異なるチャンクサイズでエンコードする
         let mut encoder = RtmpChunkEncoder::default();
         let mut buf = Vec::new();
 
         encoder.encode(&mut buf, &chunk0);
         encoder.encode(&mut buf, &chunk1);
 
-        encoder.set_chunk_size(RtmpChunkSize::new(256).expect("valid chunk size"));
+        encoder.set_chunk_size(RtmpChunkSize::new(256).expect("チャンクサイズの生成に失敗した"));
 
         encoder.encode(&mut buf, &chunk2);
         encoder.encode(&mut buf, &chunk3);
 
         let encoded = &buf[..];
 
-        // Decode with matching chunk size changes
+        // チャンクサイズの変更に合わせてデコードする
         let mut decoder = RtmpChunkDecoder::default();
         let mut remaining = encoded;
         let mut decoded = vec![];
 
         while decoded.len() < 2 {
-            let (size, chunk) = decoder.decode(remaining).expect("bug");
+            let (size, chunk) = decoder.decode(remaining).expect("デコードに失敗した");
             remaining = &remaining[size..];
             if let Some(chunk) = chunk {
                 decoded.push(chunk);
             }
         }
 
-        decoder.set_chunk_size(RtmpChunkSize::new(256).expect("valid chunk size"));
+        decoder.set_chunk_size(RtmpChunkSize::new(256).expect("チャンクサイズの生成に失敗した"));
 
         while decoded.len() < 4 {
-            let (size, chunk) = decoder.decode(remaining).expect("bug");
+            let (size, chunk) = decoder.decode(remaining).expect("デコードに失敗した");
             remaining = &remaining[size..];
             if let Some(chunk) = chunk {
                 decoded.push(chunk);
@@ -558,11 +592,13 @@ mod tests {
     #[test]
     fn decode_chunk_id_over_320() {
         let chunk0 = RtmpChunk {
-            chunk_stream_id: RtmpChunkStreamId::new(320).expect("infallible"),
+            chunk_stream_id: RtmpChunkStreamId::new(320)
+                .expect("有効なチャンクストリーム ID であるはず"),
             ..input_chunk()
         };
         let chunk1 = RtmpChunk {
-            chunk_stream_id: RtmpChunkStreamId::new(320).expect("infallible"),
+            chunk_stream_id: RtmpChunkStreamId::new(320)
+                .expect("有効なチャンクストリーム ID であるはず"),
             message_type: RtmpMessageType::CommandAmf0,
             ..chunk0.clone()
         };
@@ -574,11 +610,13 @@ mod tests {
     #[test]
     fn decode_chunk_id_65599() {
         let chunk0 = RtmpChunk {
-            chunk_stream_id: RtmpChunkStreamId::new(65599).expect("infallible"),
+            chunk_stream_id: RtmpChunkStreamId::new(65599)
+                .expect("有効なチャンクストリーム ID であるはず"),
             ..input_chunk()
         };
         let chunk1 = RtmpChunk {
-            chunk_stream_id: RtmpChunkStreamId::new(65599).expect("infallible"),
+            chunk_stream_id: RtmpChunkStreamId::new(65599)
+                .expect("有効なチャンクストリーム ID であるはず"),
             message_type: RtmpMessageType::Video,
             ..chunk0.clone()
         };
@@ -591,15 +629,18 @@ mod tests {
     fn decode_multiple_chunk_stream_ids_with_large_ids() {
         let chunk0 = input_chunk();
         let chunk1 = RtmpChunk {
-            chunk_stream_id: RtmpChunkStreamId::new(320).expect("infallible"),
+            chunk_stream_id: RtmpChunkStreamId::new(320)
+                .expect("有効なチャンクストリーム ID であるはず"),
             ..chunk0.clone()
         };
         let chunk2 = RtmpChunk {
-            chunk_stream_id: RtmpChunkStreamId::new(65599).expect("infallible"),
+            chunk_stream_id: RtmpChunkStreamId::new(65599)
+                .expect("有効なチャンクストリーム ID であるはず"),
             ..chunk0.clone()
         };
         let chunk3 = RtmpChunk {
-            chunk_stream_id: RtmpChunkStreamId::new(4).expect("infallible"),
+            chunk_stream_id: RtmpChunkStreamId::new(4)
+                .expect("有効なチャンクストリーム ID であるはず"),
             ..chunk0.clone()
         };
         let encoded = encode_chunks(&[
@@ -614,7 +655,8 @@ mod tests {
 
     fn input_chunk() -> RtmpChunk {
         RtmpChunk {
-            chunk_stream_id: RtmpChunkStreamId::new(4).expect("infallible"),
+            chunk_stream_id: RtmpChunkStreamId::new(4)
+                .expect("有効なチャンクストリーム ID であるはず"),
             message_stream_id: RtmpMessageStreamId::new(2),
             message_type: RtmpMessageType::Ack,
             timestamp: RtmpTimestamp::from_millis(300),

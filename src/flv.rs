@@ -1,3 +1,6 @@
+//! FLV の音声タグ・映像タグのヘッダーをエンコード・デコードするモジュール
+//! データ形式は FLV 仕様（Video File Format Specification）に従う。
+
 use alloc::vec::Vec;
 
 use crate::bytes::{BytesReader, BytesWriter};
@@ -7,6 +10,12 @@ use crate::{
     VideoFrameType,
 };
 
+/// 音声フレームを FLV の音声タグの形式で `buf` の末尾に書き込む
+///
+/// 音声タグのヘッダー（AudioTagHeader）に音声フォーマット・サンプリングレート・
+/// サンプルサイズ・チャンネル数を書き込み、その後に音声データを書き込む。
+/// AAC の場合は AAC パケットタイプ（シーケンスヘッダーか生データか）も書き込む
+/// （FLV 仕様 E.4.2 節）。
 pub fn encode_audio_frame(buf: &mut Vec<u8>, frame: &AudioFrame) {
     // オーディオヘッダーバイトを構築
     let header = ((frame.format as u8) << 4)
@@ -17,7 +26,7 @@ pub fn encode_audio_frame(buf: &mut Vec<u8>, frame: &AudioFrame) {
     // ヘッダーバイトを書き込む
     buf.write_u8(header);
 
-    // フォーマットがAACの場合、AAC固有のヘッダーを書き込む
+    // フォーマットが AAC の場合、AAC 固有のヘッダーを書き込む
     if frame.format == AudioFormat::Aac {
         buf.write_u8(if frame.is_aac_sequence_header { 0 } else { 1 });
     }
@@ -26,6 +35,14 @@ pub fn encode_audio_frame(buf: &mut Vec<u8>, frame: &AudioFrame) {
     buf.write_bytes(&frame.data);
 }
 
+/// FLV の音声タグをデコードして [`AudioFrame`] を返す
+///
+/// 音声タグのヘッダー（AudioTagHeader）から音声フォーマット・サンプリングレート・
+/// サンプルサイズ・チャンネル数を読み取り、残りのバイト列を音声データとして扱う。
+/// `timestamp` はフレームのタイムスタンプとしてそのまま設定される。
+/// AAC 以外のフォーマットでは `is_aac_sequence_header` は `false` になる。
+/// 未知の音声フォーマットの場合や、AAC のパケットタイプを読み取れない場合は
+/// [`Error`] を返す（FLV 仕様 E.4.2 節）。
 pub fn decode_audio_frame(buf: &[u8], timestamp: RtmpTimestamp) -> Result<AudioFrame, Error> {
     let mut reader = buf;
 
@@ -71,7 +88,7 @@ pub fn decode_audio_frame(buf: &[u8], timestamp: RtmpTimestamp) -> Result<AudioF
     // チャンネルタイプを抽出 (ビット 0)
     let is_stereo = (header & 0x01) != 0;
 
-    // フォーマットがAACの場合、AAC固有のヘッダーを処理
+    // フォーマットが AAC の場合、AAC 固有のヘッダーを処理する
     let is_aac_sequence_header = if format == AudioFormat::Aac {
         let aac_packet_type = reader.read_u8()?;
         aac_packet_type == 0 // 0 = シーケンスヘッダー、1 = 生データ
@@ -93,12 +110,18 @@ pub fn decode_audio_frame(buf: &[u8], timestamp: RtmpTimestamp) -> Result<AudioF
     })
 }
 
+/// 映像フレームを FLV の映像タグの形式で `buf` の末尾に書き込む
+///
+/// 映像タグのヘッダー（VideoTagHeader）にフレームタイプとコーデックを書き込み、
+/// その後に映像データを書き込む。`avc_packet_type` が `Some` の場合は、
+/// AVC パケットタイプと合成タイムスタンプオフセット（CompositionTime）も書き込む
+/// （FLV 仕様 E.4.3 節）。
 pub fn encode_video_frame(buf: &mut Vec<u8>, frame: &VideoFrame) {
     // フレームタイプとコーデックを組み合わせたバイトを構築
     let frame_type_codec = ((frame.frame_type as u8) << 4) | (frame.codec as u8);
     buf.write_u8(frame_type_codec);
 
-    // コーデックがAVCの場合、AVC固有の情報を書き込む
+    // AVC パケットタイプが設定されている場合、AVC 固有の情報を書き込む
     if let Some(avc_packet_type) = frame.avc_packet_type {
         buf.write_u8(avc_packet_type as u8);
         buf.write_i24(frame.composition_timestamp_offset.as_millis());
@@ -108,6 +131,14 @@ pub fn encode_video_frame(buf: &mut Vec<u8>, frame: &VideoFrame) {
     buf.write_bytes(&frame.data);
 }
 
+/// FLV の映像タグをデコードして [`VideoFrame`] を返す
+///
+/// 映像タグのヘッダー（VideoTagHeader）からフレームタイプとコーデックを読み取り、
+/// 残りのバイト列を映像データとして扱う。`timestamp` はフレームのタイムスタンプとして
+/// そのまま設定される。コーデックが AVC で、フレームタイプが
+/// `VideoInfoOrCommandFrame` でない場合は、AVC パケットタイプと合成タイムスタンプ
+/// オフセット（CompositionTime）も読み取る。未知のフレームタイプ・コーデック・
+/// AVC パケットタイプの場合は [`Error`] を返す（FLV 仕様 E.4.3 節）。
 pub fn decode_video_frame(buf: &[u8], timestamp: RtmpTimestamp) -> Result<VideoFrame, Error> {
     let mut reader = buf;
 
@@ -130,7 +161,7 @@ pub fn decode_video_frame(buf: &[u8], timestamp: RtmpTimestamp) -> Result<VideoF
         }
     };
 
-    // コーデックIDを抽出 (ビット 3-0)
+    // コーデック ID を抽出 (ビット 3-0)
     let codec_bits = frame_type_codec & 0x0F;
     let codec = match codec_bits {
         1 => VideoCodec::Jpeg,
@@ -148,7 +179,7 @@ pub fn decode_video_frame(buf: &[u8], timestamp: RtmpTimestamp) -> Result<VideoF
         }
     };
 
-    // コーデックがAVCで、フレームタイプが VideoInfoOrCommandFrame でない場合
+    // コーデックが AVC で、フレームタイプが VideoInfoOrCommandFrame でない場合
     let (avc_packet_type, composition_timestamp_offset) =
         if codec == VideoCodec::Avc && frame_type != VideoFrameType::VideoInfoOrCommandFrame {
             let avc_packet_type_byte = reader.read_u8()?;
@@ -167,7 +198,7 @@ pub fn decode_video_frame(buf: &[u8], timestamp: RtmpTimestamp) -> Result<VideoF
             let composition_timestamp_offset = RtmpTimestampDelta::from_millis(reader.read_i24()?);
             (Some(avc_packet_type), composition_timestamp_offset)
         } else {
-            // AVC以外のコーデックや VideoInfoOrCommandFrame の場合
+            // AVC 以外のコーデックや VideoInfoOrCommandFrame の場合
             (None, RtmpTimestampDelta::ZERO)
         };
 

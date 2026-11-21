@@ -1,4 +1,4 @@
-//! AVC Sequence Header Fuzzing
+//! AVC シーケンスヘッダーのファジング
 //!
 //! AvcSequenceHeader のバイナリパース処理をファジングする。
 
@@ -9,6 +9,8 @@ use shiguredo_rtmp::AvcSequenceHeader;
 
 fuzz_target!(|data: &[u8]| {
     if let Ok(header) = AvcSequenceHeader::from_bytes(data) {
-        header.to_bytes().unwrap();
+        header
+            .to_bytes()
+            .expect("パースに成功したヘッダーのエンコードは失敗しない");
     }
 });

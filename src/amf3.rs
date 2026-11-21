@@ -1,5 +1,4 @@
-// AMF3 の詳細は仕様書を参照（このモジュールは `missing_docs` を抑制する）
-#![allow(missing_docs)]
+//! AMF3（Action Message Format 3）の値型とエンコード・デコード処理を提供するモジュール
 
 use alloc::string::String;
 use alloc::vec::Vec;
@@ -28,58 +27,142 @@ const MARKER_DOUBLE_VECTOR: u8 = 0x0F;
 const MARKER_OBJECT_VECTOR: u8 = 0x10;
 const MARKER_DICTIONARY: u8 = 0x11;
 
+/// AMF3 の値を表す型
+///
+/// AMF3 仕様（Action Message Format -- AMF 3）で定義された型マーカーに対応する variant を持つ。
+/// 文字列や複合型の参照はデコード時に解決され、この型には展開済みの値が格納される。
 #[derive(Debug, Clone, PartialEq, PartialOrd)]
 pub enum Amf3Value {
+    /// 未定義値（型マーカー 0x00）
     Undefined,
+
+    /// null（型マーカー 0x01）
     Null,
+
+    /// 真偽値（型マーカー 0x02 の false、または 0x03 の true）
     Boolean(bool),
+
+    /// 29 ビットの符号付き整数（型マーカー 0x04）
+    ///
+    /// エンコード時に `-2^28` より大きく `2^28` 未満の範囲に収まっていない場合はパニックする。
     Integer(i32),
+
+    /// 倍精度浮動小数点数（型マーカー 0x05）
     Double(f64),
+
+    /// 文字列（型マーカー 0x06）
     String(String),
+
+    /// XML ドキュメント（型マーカー 0x07）
     XmlDocument(String),
+
+    /// 日時（型マーカー 0x08）
     Date {
+        /// UNIX エポックからの経過時間
+        ///
+        /// AMF3 ではミリ秒単位の値として表現するため、エンコード時はミリ秒未満を切り捨てる。
         unix_time: Duration,
     },
+
+    /// 配列（型マーカー 0x09）
     Array {
+        /// 連想配列部分のキーと値の組
         assoc_entries: Vec<Pair<String, Self>>,
+
+        /// 密な配列部分の要素
         dense_entries: Vec<Self>,
     },
+
+    /// オブジェクト（型マーカー 0x0A）
     Object {
-        // `None` なら無名オブジェクト
+        /// クラス名。`None` なら無名オブジェクト
         class_name: Option<String>,
 
-        // この数の "sealed member" が entries の先頭に配置されている
+        /// メンバーの一覧の先頭から sealed member として扱う個数
+        ///
+        /// `entries.len()` 以下である必要がある。`entries.len()` を超える値を設定して
+        /// エンコードすると、trait が宣言するフィールド数と実際に出力する値の個数が食い違い、
+        /// 不正な AMF3 データになる。
         sealed_count: usize,
 
+        /// メンバーの一覧
+        ///
+        /// 先頭から `sealed_count` 個が sealed member、残りが dynamic member になる。
         entries: Vec<Pair<String, Self>>,
     },
+
+    /// XML（型マーカー 0x0B）
     Xml(String),
+
+    /// バイト配列（型マーカー 0x0C）
     ByteArray(Vec<u8>),
+
+    /// `Vector<int>`（型マーカー 0x0D）
     IntVector {
+        /// 固定長かどうか
         is_fixed: bool,
+
+        /// 要素の一覧
         entries: Vec<i32>,
     },
+
+    /// `Vector<uint>`（型マーカー 0x0E）
     UintVector {
+        /// 固定長かどうか
         is_fixed: bool,
+
+        /// 要素の一覧
         entries: Vec<u32>,
     },
+
+    /// `Vector<double>`（型マーカー 0x0F）
     DoubleVector {
+        /// 固定長かどうか
         is_fixed: bool,
+
+        /// 要素の一覧
         entries: Vec<f64>,
     },
+
+    /// `Vector<Object>`（型マーカー 0x10）
     ObjectVector {
-        // `None` なら任意の型を要素に含むことを意味する
+        /// 要素のクラス名。`None` なら任意の型の要素を含むことを表す
         class_name: Option<String>,
+
+        /// 固定長かどうか
         is_fixed: bool,
+
+        /// 要素の一覧
         entries: Vec<Self>,
     },
+
+    /// 辞書（型マーカー 0x11）
     Dictionary {
+        /// 弱参照のキーを使用するかどうか
         is_weak: bool,
+
+        /// キーと値の組の一覧
         entries: Vec<Pair<Self, Self>>,
     },
 }
 
 impl Amf3Value {
+    /// バイト列の先頭から AMF3 の値を 1 つデコードする
+    ///
+    /// 戻り値はデコードに使用したバイト数とデコードした値の組になる。
+    /// 文字列や複合型の参照テーブルを使って値を復元し、参照を検出した場合は複製した値を返す。
+    ///
+    /// # エラー
+    ///
+    /// 次の場合はエラーを返す。
+    ///
+    /// - 型マーカーや長さ、値の読み取りに必要なバイト数が足りない場合
+    /// - 未知の型マーカーが現れた場合
+    /// - 文字列、複合型、オブジェクトの trait の参照番号が範囲外である場合
+    /// - 循環参照が現れた場合
+    /// - Externalizable（外部化）なオブジェクトが現れた場合
+    /// - 日時の値が有限の非負値でない場合
+    /// - 文字列が不正な UTF-8 である場合
     pub fn decode(buf: &[u8]) -> Result<(usize, Self), Error> {
         let original_len = buf.len();
         let mut decoder = Decoder {
@@ -92,6 +175,15 @@ impl Amf3Value {
         Ok((original_len - decoder.buf.len(), value))
     }
 
+    /// AMF3 の値をエンコードして `buf` の末尾に追記する
+    ///
+    /// variant に応じた型マーカーとデータを出力する。
+    /// 文字列や複合型の参照テーブルは出力しないため、
+    /// 同じ値が複数現れてもそれぞれ独立した値としてエンコードされる。
+    ///
+    /// # パニック
+    ///
+    /// `Integer` が `-2^28` 以上 `2^28` 未満の範囲に収まっていない場合はパニックする。
     pub fn encode(&self, buf: &mut Vec<u8>) {
         let mut encoder = Encoder { buf };
         encoder.encode_value(self);
@@ -113,7 +205,7 @@ struct Trait {
     fields: Vec<String>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 enum SizeOrIndex {
     Size(usize),
     Index(usize),
@@ -461,11 +553,11 @@ impl<'a> Encoder<'a> {
     }
 
     fn encode_integer(&mut self, i: i32) {
-        // i が 29 bit の範囲内に収まっているかどうかを assert! でチェックする
+        // i が 29 ビット符号付き整数の範囲 (-2^28 以上 2^28 未満) に収まっているかを検証する
         //
-        // [NOTE]
-        // AMF のエンコードは crate 内部のみで行われ、外部には公開されていないので、
-        // これを正しく呼ぶのは呼び出し側の責務として、ここでは条件に違反した場合は単純にパニックしている
+        // [補足]
+        // 範囲外の値を渡すのは呼び出し側の責務違反であり、AMF3 の表現では表せないため、
+        // ここでは単純にパニックさせている
         assert!(
             (-(1i32 << 28)..(1i32 << 28)).contains(&i),
             "integer must fit in 29-bit signed range, got: {}",

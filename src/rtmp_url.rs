@@ -1,3 +1,5 @@
+//! RTMP の URL を解析・整形するモジュール
+
 use alloc::borrow::ToOwned;
 use alloc::string::String;
 use core::fmt;
@@ -7,7 +9,7 @@ use crate::Error;
 
 /// RTMP 用の URL
 ///
-/// # NOTE
+/// # 補足
 ///
 /// [`core::str::FromStr`] の実装では [`RtmpUrl::parse()`] が使用されます。
 /// もしストリーム名を URL 文字列とは別に指定したい場合には [`RtmpUrl::parse_with_stream_name()`] を使用してください。
@@ -84,7 +86,7 @@ impl RtmpUrl {
     }
 
     fn parse_scheme_and_host_port(s: &str) -> Result<(bool, &str, u16, &str), Error> {
-        // scheme://
+        // スキーム部分
         let (scheme, rest) = s
             .split_once("://")
             .ok_or_else(|| Error::invalid_input("missing '://' in RTMP URL"))?;
@@ -98,12 +100,12 @@ impl RtmpUrl {
             }
         };
 
-        // host[:port]/path
+        // ホスト・ポート部分とパス部分
         let (host_port, path) = rest
             .split_once('/')
             .ok_or_else(|| Error::invalid_input("missing '/' separator for app name"))?;
 
-        // host, port
+        // ホストとポート
         let (host, port) = parse_host_port(host_port, tls)?;
 
         if host.is_empty() {
@@ -202,7 +204,8 @@ mod tests {
 
     #[test]
     fn test_basic_rtmp_url() {
-        let url = RtmpUrl::from_str("rtmp://example.com:1935/live/stream").expect("valid RTMP URL");
+        let url =
+            RtmpUrl::from_str("rtmp://example.com:1935/live/stream").expect("有効な RTMP URL");
         assert_eq!(url.host, "example.com");
         assert_eq!(url.port, 1935);
         assert_eq!(url.app, "live");
@@ -212,7 +215,8 @@ mod tests {
 
     #[test]
     fn test_rtmps_url() {
-        let url = RtmpUrl::from_str("rtmps://example.com:443/live/stream").expect("valid RTMP URL");
+        let url =
+            RtmpUrl::from_str("rtmps://example.com:443/live/stream").expect("有効な RTMP URL");
         assert_eq!(url.host, "example.com");
         assert_eq!(url.port, 443);
         assert_eq!(url.app, "live");
@@ -222,19 +226,19 @@ mod tests {
 
     #[test]
     fn test_default_port_rtmp() {
-        let url = RtmpUrl::from_str("rtmp://example.com/live/stream").expect("valid RTMP URL");
+        let url = RtmpUrl::from_str("rtmp://example.com/live/stream").expect("有効な RTMP URL");
         assert_eq!(url.port, 1935);
     }
 
     #[test]
     fn test_default_port_rtmps() {
-        let url = RtmpUrl::from_str("rtmps://example.com/live/stream").expect("valid RTMP URL");
+        let url = RtmpUrl::from_str("rtmps://example.com/live/stream").expect("有効な RTMP URL");
         assert_eq!(url.port, 443);
     }
 
     #[test]
     fn test_nested_app_path() {
-        let url = RtmpUrl::from_str("rtmp://example.com/app/path/stream").expect("valid RTMP URL");
+        let url = RtmpUrl::from_str("rtmp://example.com/app/path/stream").expect("有効な RTMP URL");
         assert_eq!(url.app, "app/path");
         assert_eq!(url.stream_name, "stream");
     }
@@ -266,7 +270,7 @@ mod tests {
     #[test]
     fn test_round_trip() {
         let original = "rtmp://example.com:1935/live/stream";
-        let url = RtmpUrl::from_str(original).expect("valid RTMP URL");
+        let url = RtmpUrl::from_str(original).expect("有効な RTMP URL");
         assert_eq!(url.to_string(), original);
     }
 
@@ -320,13 +324,14 @@ mod tests {
 
     #[test]
     fn test_ipv4_address() {
-        let url = RtmpUrl::from_str("rtmp://192.168.1.1:1935/live/stream").expect("valid RTMP URL");
+        let url =
+            RtmpUrl::from_str("rtmp://192.168.1.1:1935/live/stream").expect("有効な RTMP URL");
         assert_eq!(url.host, "192.168.1.1");
     }
 
     #[test]
     fn test_clone_and_equality() {
-        let url1 = RtmpUrl::from_str("rtmp://example.com/live/stream").expect("valid RTMP URL");
+        let url1 = RtmpUrl::from_str("rtmp://example.com/live/stream").expect("有効な RTMP URL");
         let url2 = url1.clone();
         assert_eq!(url1, url2);
     }
@@ -334,7 +339,7 @@ mod tests {
     // IPv6 対応テストケース
     #[test]
     fn test_ipv6_address_with_port() {
-        let url = RtmpUrl::from_str("rtmp://[::1]:1935/live/stream").expect("valid RTMP URL");
+        let url = RtmpUrl::from_str("rtmp://[::1]:1935/live/stream").expect("有効な RTMP URL");
         assert_eq!(url.host, "[::1]");
         assert_eq!(url.port, 1935);
         assert_eq!(url.app, "live");
@@ -344,21 +349,21 @@ mod tests {
     #[test]
     fn test_ipv6_address_full() {
         let url =
-            RtmpUrl::from_str("rtmp://[2001:db8::1]:1935/live/stream").expect("valid RTMP URL");
+            RtmpUrl::from_str("rtmp://[2001:db8::1]:1935/live/stream").expect("有効な RTMP URL");
         assert_eq!(url.host, "[2001:db8::1]");
         assert_eq!(url.port, 1935);
     }
 
     #[test]
     fn test_ipv6_address_default_port_rtmp() {
-        let url = RtmpUrl::from_str("rtmp://[::1]/live/stream").expect("valid RTMP URL");
+        let url = RtmpUrl::from_str("rtmp://[::1]/live/stream").expect("有効な RTMP URL");
         assert_eq!(url.host, "[::1]");
         assert_eq!(url.port, 1935);
     }
 
     #[test]
     fn test_ipv6_address_default_port_rtmps() {
-        let url = RtmpUrl::from_str("rtmps://[::1]/live/stream").expect("valid RTMP URL");
+        let url = RtmpUrl::from_str("rtmps://[::1]/live/stream").expect("有効な RTMP URL");
         assert_eq!(url.host, "[::1]");
         assert_eq!(url.port, 443);
     }
@@ -390,7 +395,7 @@ mod tests {
     #[test]
     fn test_ipv6_round_trip() {
         let original = "rtmp://[::1]:1935/live/stream";
-        let url = RtmpUrl::from_str(original).expect("valid RTMP URL");
+        let url = RtmpUrl::from_str(original).expect("有効な RTMP URL");
         assert_eq!(url.to_string(), original);
     }
 

@@ -1,176 +1,176 @@
 //! RTMP Connection (Message Channel) の Property-Based Testing
 
-use proptest::collection::vec;
-use proptest::prelude::*;
-use shiguredo_rtmp::tests::{
-    AudioFormat, AudioFrame, AudioSampleRate, AvcPacketType, RtmpChunkSize, RtmpMessage,
-    RtmpMessageChannel, RtmpMessageDecoder, RtmpMessageHeader, RtmpMessageStreamId, RtmpTimestamp,
-    RtmpTimestampDelta, RtmpUserControlEvent, VideoCodec, VideoFrame, VideoFrameType,
+use noprop::TestCaseContext;
+use shiguredo_rtmp::media::{
+    AudioFormat, AudioFrame, AudioSampleRate, AvcPacketType, VideoCodec, VideoFrame, VideoFrameType,
 };
+use shiguredo_rtmp::rtmp_chunk::RtmpChunkSize;
+use shiguredo_rtmp::rtmp_connection::RtmpMessageChannel;
+use shiguredo_rtmp::rtmp_message::{RtmpMessage, RtmpMessageHeader, RtmpMessageStreamId};
+use shiguredo_rtmp::rtmp_message_decoder::RtmpMessageDecoder;
+use shiguredo_rtmp::rtmp_timestamp::{RtmpTimestamp, RtmpTimestampDelta};
+use shiguredo_rtmp::rtmp_user_control_event::RtmpUserControlEvent;
 
-// =============================================================================
-// Strategy 定義
-// =============================================================================
+/// このファイルの PBT ケース数
+const CASES: usize = 300;
+
+/// 乱数シードを取得する環境変数名
+const SEED_ENV: &str = "RTMP_RS_PBT_SEED";
 
 /// Protocol Control Message 用のヘッダを生成する
-fn arb_pcm_header() -> impl Strategy<Value = RtmpMessageHeader> {
-    any::<u32>().prop_map(|timestamp_ms| RtmpMessageHeader {
+fn sample_pcm_header(ctx: &mut TestCaseContext) -> RtmpMessageHeader {
+    RtmpMessageHeader {
         stream_id: RtmpMessageStreamId::PCM,
-        timestamp: RtmpTimestamp::from_millis(timestamp_ms),
-    })
+        timestamp: RtmpTimestamp::from_millis(noprop::sample_u32(ctx)),
+    }
 }
 
 /// Media Message 用のヘッダを生成する
-fn arb_media_header() -> impl Strategy<Value = RtmpMessageHeader> {
-    (any::<u32>(), any::<u32>()).prop_map(|(stream_id, timestamp_ms)| RtmpMessageHeader {
-        stream_id: RtmpMessageStreamId::new(stream_id),
-        timestamp: RtmpTimestamp::from_millis(timestamp_ms),
-    })
+fn sample_media_header(ctx: &mut TestCaseContext) -> RtmpMessageHeader {
+    RtmpMessageHeader {
+        stream_id: RtmpMessageStreamId::new(noprop::sample_u32(ctx)),
+        timestamp: RtmpTimestamp::from_millis(noprop::sample_u32(ctx)),
+    }
 }
 
-/// 有効な RtmpChunkSize を生成する
-fn arb_chunk_size() -> impl Strategy<Value = RtmpChunkSize> {
-    (1usize..=4096).prop_filter_map("valid chunk size", RtmpChunkSize::new)
+/// 有効なチャンクサイズを生成する
+fn sample_chunk_size(ctx: &mut TestCaseContext) -> RtmpChunkSize {
+    let size = noprop::sample_usize_in(ctx, 1..=4096);
+    RtmpChunkSize::new(size).expect("サンプリングした範囲のチャンクサイズは有効")
 }
 
-/// User Control Event を生成する
-fn arb_user_control_event() -> impl Strategy<Value = RtmpUserControlEvent> {
-    prop_oneof![
-        any::<u32>().prop_map(|stream_id| RtmpUserControlEvent::StreamBegin {
-            stream_id: RtmpMessageStreamId::new(stream_id),
-        }),
-        any::<u32>().prop_map(|stream_id| RtmpUserControlEvent::StreamEof {
-            stream_id: RtmpMessageStreamId::new(stream_id),
-        }),
-        any::<u32>().prop_map(|stream_id| RtmpUserControlEvent::StreamDry {
-            stream_id: RtmpMessageStreamId::new(stream_id),
-        }),
-        any::<u32>().prop_map(|timestamp_ms| RtmpUserControlEvent::PingRequest {
-            timestamp: RtmpTimestamp::from_millis(timestamp_ms),
-        }),
-        any::<u32>().prop_map(|timestamp_ms| RtmpUserControlEvent::PingResponse {
-            timestamp: RtmpTimestamp::from_millis(timestamp_ms),
-        }),
-    ]
+/// ユーザーコントロールイベントを生成する
+fn sample_user_control_event(ctx: &mut TestCaseContext) -> RtmpUserControlEvent {
+    match noprop::sample_weighted_index(ctx, &[1, 1, 1, 1, 1]) {
+        0 => RtmpUserControlEvent::StreamBegin {
+            stream_id: RtmpMessageStreamId::new(noprop::sample_u32(ctx)),
+        },
+        1 => RtmpUserControlEvent::StreamEof {
+            stream_id: RtmpMessageStreamId::new(noprop::sample_u32(ctx)),
+        },
+        2 => RtmpUserControlEvent::StreamDry {
+            stream_id: RtmpMessageStreamId::new(noprop::sample_u32(ctx)),
+        },
+        3 => RtmpUserControlEvent::PingRequest {
+            timestamp: RtmpTimestamp::from_millis(noprop::sample_u32(ctx)),
+        },
+        _ => RtmpUserControlEvent::PingResponse {
+            timestamp: RtmpTimestamp::from_millis(noprop::sample_u32(ctx)),
+        },
+    }
 }
 
-/// AudioFrame を生成する
-fn arb_audio_frame() -> impl Strategy<Value = AudioFrame> {
-    (
-        any::<u32>(),
-        prop_oneof![Just(AudioFormat::Mp3), Just(AudioFormat::Aac)],
-        prop_oneof![
-            Just(AudioSampleRate::Khz5),
-            Just(AudioSampleRate::Khz11),
-            Just(AudioSampleRate::Khz22),
-            Just(AudioSampleRate::Khz44),
-        ],
-        any::<bool>(),
-        any::<bool>(),
-        any::<bool>(),
-        vec(any::<u8>(), 0..64),
-    )
-        .prop_map(
-            |(
-                timestamp_ms,
-                format,
-                sample_rate,
-                is_8bit_sample,
-                is_stereo,
-                is_aac_sequence_header,
-                data,
-            )| {
-                let is_aac_sequence_header = if format == AudioFormat::Aac {
-                    is_aac_sequence_header
-                } else {
-                    false
-                };
-                AudioFrame {
-                    timestamp: RtmpTimestamp::from_millis(timestamp_ms),
-                    format,
-                    sample_rate,
-                    is_8bit_sample,
-                    is_stereo,
-                    is_aac_sequence_header,
-                    data,
-                }
-            },
-        )
+/// 音声フレームを生成する
+fn sample_audio_frame(ctx: &mut TestCaseContext) -> AudioFrame {
+    let format = noprop::sample_choice(ctx, &[AudioFormat::Mp3, AudioFormat::Aac]);
+    let len = noprop::sample_usize_in(ctx, 0..64);
+    // AAC 以外の場合、is_aac_sequence_header はデコード時に false になるため揃えておく
+    let is_aac_sequence_header = format == AudioFormat::Aac && noprop::sample_bool(ctx);
+    AudioFrame {
+        timestamp: RtmpTimestamp::from_millis(noprop::sample_u32(ctx)),
+        format,
+        sample_rate: noprop::sample_choice(
+            ctx,
+            &[
+                AudioSampleRate::Khz5,
+                AudioSampleRate::Khz11,
+                AudioSampleRate::Khz22,
+                AudioSampleRate::Khz44,
+            ],
+        ),
+        is_8bit_sample: noprop::sample_bool(ctx),
+        is_stereo: noprop::sample_bool(ctx),
+        is_aac_sequence_header,
+        data: noprop::sample_bytes_vec(ctx, len),
+    }
 }
 
-/// VideoFrame を生成する
-fn arb_video_frame() -> impl Strategy<Value = VideoFrame> {
-    prop_oneof![
-        (any::<u32>(), vec(any::<u8>(), 0..64)).prop_map(|(timestamp_ms, data)| VideoFrame {
-            timestamp: RtmpTimestamp::from_millis(timestamp_ms),
+/// 映像フレームを生成する
+fn sample_video_frame(ctx: &mut TestCaseContext) -> VideoFrame {
+    let len = noprop::sample_usize_in(ctx, 0..64);
+    if noprop::sample_bool(ctx) {
+        // AVC 以外の映像フレーム
+        VideoFrame {
+            timestamp: RtmpTimestamp::from_millis(noprop::sample_u32(ctx)),
             composition_timestamp_offset: RtmpTimestampDelta::ZERO,
             frame_type: VideoFrameType::KeyFrame,
             codec: VideoCodec::Jpeg,
             avc_packet_type: None,
-            data,
-        }),
-        (
-            any::<u32>(),
-            -1000i32..=1000i32,
-            prop_oneof![
-                Just(AvcPacketType::SequenceHeader),
-                Just(AvcPacketType::NalUnit),
-                Just(AvcPacketType::EndOfSequence),
-            ],
-            vec(any::<u8>(), 0..64),
-        )
-            .prop_map(
-                |(timestamp_ms, offset_ms, avc_packet_type, data)| VideoFrame {
-                    timestamp: RtmpTimestamp::from_millis(timestamp_ms),
-                    composition_timestamp_offset: RtmpTimestampDelta::from_millis(offset_ms),
-                    frame_type: VideoFrameType::KeyFrame,
-                    codec: VideoCodec::Avc,
-                    avc_packet_type: Some(avc_packet_type),
-                    data,
-                }
-            ),
-    ]
+            data: noprop::sample_bytes_vec(ctx, len),
+        }
+    } else {
+        // AVC の映像フレーム
+        VideoFrame {
+            timestamp: RtmpTimestamp::from_millis(noprop::sample_u32(ctx)),
+            composition_timestamp_offset: RtmpTimestampDelta::from_millis(noprop::sample_i32_in(
+                ctx,
+                -1000..=1000,
+            )),
+            frame_type: VideoFrameType::KeyFrame,
+            codec: VideoCodec::Avc,
+            avc_packet_type: Some(noprop::sample_choice(
+                ctx,
+                &[
+                    AvcPacketType::SequenceHeader,
+                    AvcPacketType::NalUnit,
+                    AvcPacketType::EndOfSequence,
+                ],
+            )),
+            data: noprop::sample_bytes_vec(ctx, len),
+        }
+    }
 }
 
-/// 代表的な RTMP Message を生成する
-fn arb_message() -> impl Strategy<Value = RtmpMessage> {
-    prop_oneof![
-        (arb_pcm_header(), arb_chunk_size())
-            .prop_map(|(header, size)| { RtmpMessage::SetChunkSize { header, size } }),
-        (arb_pcm_header(), any::<u32>()).prop_map(|(header, sequence_number)| {
-            RtmpMessage::Ack {
-                header,
-                sequence_number,
-            }
-        }),
-        (arb_pcm_header(), any::<u32>())
-            .prop_map(|(header, size)| RtmpMessage::WinAckSize { header, size }),
-        (arb_pcm_header(), arb_user_control_event())
-            .prop_map(|(header, event)| { RtmpMessage::UserControl { header, event } }),
-        (arb_media_header(), arb_audio_frame()).prop_map(|(header, mut frame)| {
+/// 代表的な RTMP メッセージを生成する
+fn sample_message(ctx: &mut TestCaseContext) -> RtmpMessage {
+    match noprop::sample_weighted_index(ctx, &[1, 1, 1, 1, 1, 1]) {
+        0 => RtmpMessage::SetChunkSize {
+            header: sample_pcm_header(ctx),
+            size: sample_chunk_size(ctx),
+        },
+        1 => RtmpMessage::Ack {
+            header: sample_pcm_header(ctx),
+            sequence_number: noprop::sample_u32(ctx),
+        },
+        2 => RtmpMessage::WinAckSize {
+            header: sample_pcm_header(ctx),
+            size: noprop::sample_u32(ctx),
+        },
+        3 => RtmpMessage::UserControl {
+            header: sample_pcm_header(ctx),
+            event: sample_user_control_event(ctx),
+        },
+        4 => {
+            let header = sample_media_header(ctx);
+            let mut frame = sample_audio_frame(ctx);
             frame.timestamp = header.timestamp;
             RtmpMessage::Audio { header, frame }
-        }),
-        (arb_media_header(), arb_video_frame()).prop_map(|(header, mut frame)| {
+        }
+        _ => {
+            let header = sample_media_header(ctx);
+            let mut frame = sample_video_frame(ctx);
             frame.timestamp = header.timestamp;
             if frame.avc_packet_type.is_none() {
                 frame.composition_timestamp_offset = RtmpTimestampDelta::ZERO;
             }
             RtmpMessage::Video { header, frame }
-        }),
-    ]
+        }
+    }
 }
 
-// =============================================================================
-// Roundtrip / ACK テスト
-// =============================================================================
+/// 指定した長さのメッセージ列を生成する
+fn sample_messages(ctx: &mut TestCaseContext, range: std::ops::Range<usize>) -> Vec<RtmpMessage> {
+    let len = noprop::sample_usize_in(ctx, range);
+    (0..len).map(|_| sample_message(ctx)).collect()
+}
 
-proptest! {
-    #![proptest_config(ProptestConfig::with_cases(300))]
+/// RtmpMessageChannel の送信バッファが decode で再現できることを検証する
+#[test]
+fn message_channel_send_roundtrip() -> noprop::TestResult {
+    let seed = noprop::seed_from_env_or_time(SEED_ENV)?;
+    noprop::Runner::new(seed).run(CASES, |ctx: &mut TestCaseContext| {
+        let messages = sample_messages(ctx, 1..20);
 
-    /// RtmpMessageChannel の送信バッファが decode で再現できることを検証
-    #[test]
-    fn message_channel_send_roundtrip(messages in vec(arb_message(), 1..20)) {
         let mut channel = RtmpMessageChannel::default();
         for message in &messages {
             channel.feed_send_message(message.clone());
@@ -181,20 +181,31 @@ proptest! {
         decoder.feed_buf(&buf);
 
         let mut decoded = Vec::new();
-        while let Some(message) = decoder.decode().expect("decode should succeed") {
+        while let Some(message) = decoder
+            .decode()
+            .expect("エンコードしたメッセージのデコードは失敗しない")
+        {
             decoded.push(message);
         }
 
-        prop_assert_eq!(decoded, messages);
-    }
+        assert_eq!(
+            decoded, messages,
+            "ラウンドトリップしたメッセージ列が一致しない"
+        );
+        Ok(())
+    })?;
+    Ok(())
+}
 
-    /// 受信バイト数と peer_ack_window_size に基づく ACK 送信判定を検証
-    #[test]
-    fn message_channel_recv_ack_threshold(
-        messages in vec(arb_message(), 1..10),
-        segment_sizes in vec(0usize..=128, 1..40),
-        peer_ack_window_size in 1u32..=10_000u32,
-    ) {
+/// 受信バイト数と peer_ack_window_size に基づく ACK 送信判定を検証する
+#[test]
+fn message_channel_recv_ack_threshold() -> noprop::TestResult {
+    let seed = noprop::seed_from_env_or_time(SEED_ENV)?;
+    noprop::Runner::new(seed).run(CASES, |ctx: &mut TestCaseContext| {
+        let messages = sample_messages(ctx, 1..10);
+        let segment_count = noprop::sample_usize_in(ctx, 1..40);
+        let peer_ack_window_size = noprop::sample_u32_in(ctx, 1..=10_000);
+
         let mut sender = RtmpMessageChannel::default();
         for message in &messages {
             sender.feed_send_message(message.clone());
@@ -208,11 +219,12 @@ proptest! {
         let mut last_ack_sent: u32 = 0;
         let mut offset = 0usize;
 
-        for size in segment_sizes {
+        for _ in 0..segment_count {
             if offset >= buf.len() {
                 break;
             }
 
+            let size = noprop::sample_usize_in(ctx, 0..=128);
             let remaining = buf.len() - offset;
             let take = size.min(remaining);
             let chunk = &buf[offset..offset + take];
@@ -220,27 +232,39 @@ proptest! {
 
             let ack = receiver
                 .feed_recv_buf(chunk)
-                .map_err(|e| TestCaseError::fail(format!("decode failed: {e:?}")))?;
+                .expect("送信バッファを分割したデータのデコードは失敗しない");
 
             total_received += take as u32;
             let unacked = total_received - last_ack_sent;
             if unacked > peer_ack_window_size / 2 {
-                prop_assert_eq!(ack, Some(total_received));
+                assert_eq!(
+                    ack,
+                    Some(total_received),
+                    "ACK を送信すべきタイミングで送信されていない"
+                );
                 last_ack_sent = total_received;
             } else {
-                prop_assert_eq!(ack, None);
+                assert_eq!(ack, None, "ACK を送信すべきでないタイミングで送信された");
             }
         }
         // 最終 ACK の値が受信バイト数を超えないことを確認する
-        prop_assert!(last_ack_sent <= total_received);
-    }
+        assert!(
+            last_ack_sent <= total_received,
+            "最終 ACK の値が受信バイト数を超えている"
+        );
+        Ok(())
+    })?;
+    Ok(())
+}
 
-    /// ACK が届かない場合に advance_send_buf が false を返すことを検証
-    #[test]
-    fn message_channel_send_ack_timeout(
-        messages in vec(arb_message(), 1..10),
-        local_ack_window_size in 1u32..=1000u32,
-    ) {
+/// ACK が届かない場合に advance_send_buf が false を返すことを検証する
+#[test]
+fn message_channel_send_ack_timeout() -> noprop::TestResult {
+    let seed = noprop::seed_from_env_or_time(SEED_ENV)?;
+    noprop::Runner::new(seed).run(CASES, |ctx: &mut TestCaseContext| {
+        let messages = sample_messages(ctx, 1..10);
+        let local_ack_window_size = noprop::sample_u32_in(ctx, 1..=1000);
+
         let mut channel = RtmpMessageChannel::default();
         channel.set_local_ack_window_size(local_ack_window_size);
 
@@ -251,7 +275,7 @@ proptest! {
         let total_buf_len = channel.send_buf().len() as u32;
         let threshold = local_ack_window_size * 2;
 
-        // バッファが閾値より小さい場合はスキップ
+        // バッファが閾値以下の場合はこのケースをスキップする
         if total_buf_len <= threshold {
             return Ok(());
         }
@@ -261,15 +285,23 @@ proptest! {
         let result = channel.advance_send_buf(bytes_to_send);
 
         // ACK を受信していないので false が返る
-        prop_assert!(!result, "advance_send_buf should return false when ack not received");
-    }
+        assert!(
+            !result,
+            "ACK を受信していない場合は advance_send_buf が false を返す"
+        );
+        Ok(())
+    })?;
+    Ok(())
+}
 
-    /// ACK を受信すると advance_send_buf が true を返し続けることを検証
-    #[test]
-    fn message_channel_send_with_ack(
-        messages in vec(arb_message(), 1..10),
-        local_ack_window_size in 100u32..=1000u32,
-    ) {
+/// ACK を受信すると advance_send_buf が true を返し続けることを検証する
+#[test]
+fn message_channel_send_with_ack() -> noprop::TestResult {
+    let seed = noprop::seed_from_env_or_time(SEED_ENV)?;
+    noprop::Runner::new(seed).run(CASES, |ctx: &mut TestCaseContext| {
+        let messages = sample_messages(ctx, 1..10);
+        let local_ack_window_size = noprop::sample_u32_in(ctx, 100..=1000);
+
         let mut channel = RtmpMessageChannel::default();
         channel.set_local_ack_window_size(local_ack_window_size);
 
@@ -279,7 +311,7 @@ proptest! {
 
         let total_buf_len = channel.send_buf().len();
 
-        // 小さなチャンクで送信し、適宜 ACK を通知
+        // 小さなチャンクで送信し、適宜 ACK を通知する
         let chunk_size = 50usize;
         let mut bytes_sent: u32 = 0;
         let mut offset = 0usize;
@@ -287,13 +319,15 @@ proptest! {
         while offset < total_buf_len {
             let to_advance = chunk_size.min(total_buf_len - offset);
             let result = channel.advance_send_buf(to_advance);
-            prop_assert!(result, "advance_send_buf should return true when ack received");
+            assert!(result, "ACK を受信済みなら advance_send_buf は true を返す");
 
             bytes_sent += to_advance as u32;
             offset += to_advance;
 
-            // ACK を通知して unacked_bytes をリセット
+            // ACK を通知して unacked_bytes をリセットする
             channel.notify_ack_received(bytes_sent);
         }
-    }
+        Ok(())
+    })?;
+    Ok(())
 }

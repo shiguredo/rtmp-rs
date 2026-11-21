@@ -1,4 +1,4 @@
-//! RTMP Client Connection Fuzzing
+//! RTMP クライアント接続のファジング
 //!
 //! RTMP クライアント接続の受信データ処理をファジングする。
 
@@ -6,11 +6,13 @@
 
 use libfuzzer_sys::fuzz_target;
 use shiguredo_rtmp::RtmpUrl;
-use shiguredo_rtmp::tests::{RtmpPlayClientConnection, RtmpPublishClientConnection};
+use shiguredo_rtmp::rtmp_client_connection::{
+    RtmpPlayClientConnection, RtmpPublishClientConnection,
+};
 
 fuzz_target!(|data: &[u8]| {
     // 固定の接続先 URL (ファジングの対象はあくまで受信バッファなので URL は常に同じ定数でよい)
-    let url = RtmpUrl::parse("rtmp://localhost/app/stream").expect("valid RTMP URL");
+    let url = RtmpUrl::parse("rtmp://localhost/app/stream").expect("定数として指定した RTMP URL は必ず解析できる");
 
     // Publish クライアントのファジング
     {

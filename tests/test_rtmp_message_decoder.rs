@@ -1,15 +1,20 @@
 //! RTMP Message Decoder の分岐テスト
+//!
+//! プロパティとして表現しにくい意図的なエラーパスと、特殊な入力の扱いを検証する。
 
-use shiguredo_rtmp::ErrorKind;
-use shiguredo_rtmp::tests::{
-    Amf0Value, AmfValue, AmfVersion, RtmpChunk, RtmpChunkEncoder, RtmpChunkStreamId, RtmpMessage,
-    RtmpMessageDecoder, RtmpMessageStreamId, RtmpMessageType, RtmpTimestamp,
-};
+use shiguredo_rtmp::amf::{AmfValue, AmfVersion};
+use shiguredo_rtmp::amf0::Amf0Value;
+use shiguredo_rtmp::error::ErrorKind;
+use shiguredo_rtmp::rtmp_chunk::{RtmpChunk, RtmpChunkStreamId};
+use shiguredo_rtmp::rtmp_chunk_encoder::RtmpChunkEncoder;
+use shiguredo_rtmp::rtmp_message::{RtmpMessage, RtmpMessageStreamId, RtmpMessageType};
+use shiguredo_rtmp::rtmp_message_decoder::RtmpMessageDecoder;
+use shiguredo_rtmp::rtmp_timestamp::RtmpTimestamp;
 
 /// 指定した MessageType と Payload からチャンクを組み立てる
 fn encode_chunk(message_type: RtmpMessageType, payload: Vec<u8>) -> Vec<u8> {
     let chunk = RtmpChunk {
-        chunk_stream_id: RtmpChunkStreamId::new(3).expect("infallible"),
+        chunk_stream_id: RtmpChunkStreamId::new(3).expect("3 は有効なチャンクストリーム ID"),
         message_stream_id: RtmpMessageStreamId::PCM,
         message_type,
         timestamp: RtmpTimestamp::from_millis(0),
@@ -35,8 +40,8 @@ fn command_amf3_zero_prefix_treated_as_amf0() {
     decoder.feed_buf(&buf);
     let message = decoder
         .decode()
-        .expect("decode must not fail for encoded message")
-        .expect("message must exist");
+        .expect("エンコード済みメッセージのデコードは失敗しない")
+        .expect("メッセージが 1 つ存在する");
 
     match message {
         RtmpMessage::Command {
@@ -46,12 +51,16 @@ fn command_amf3_zero_prefix_treated_as_amf0() {
             args,
             ..
         } => {
-            assert_eq!(amf_version, AmfVersion::Amf0);
-            assert_eq!(name, "connect");
-            assert_eq!(transaction_id.get(), 1);
-            assert!(args.is_empty());
+            assert_eq!(
+                amf_version,
+                AmfVersion::Amf0,
+                "AMF のバージョンが一致しない"
+            );
+            assert_eq!(name, "connect", "コマンド名が一致しない");
+            assert_eq!(transaction_id.get(), 1, "トランザクション ID が一致しない");
+            assert!(args.is_empty(), "追加の引数が空でない");
         }
-        _ => panic!("unexpected message type"),
+        _ => panic!("想定外のメッセージ種別である"),
     }
 }
 
@@ -67,8 +76,8 @@ fn set_peer_bandwidth_invalid_limit_type() {
     decoder.feed_buf(&buf);
     let err = decoder
         .decode()
-        .expect_err("invalid limit type should error");
-    assert_eq!(err.kind, ErrorKind::InvalidData);
+        .expect_err("不正な limit type のデコードは失敗する");
+    assert_eq!(err.kind, ErrorKind::InvalidData, "エラー種別が一致しない");
 }
 
 /// UserControl の未知 event_type がエラーになることを検証
@@ -82,8 +91,8 @@ fn user_control_unknown_event_type() {
     decoder.feed_buf(&buf);
     let err = decoder
         .decode()
-        .expect_err("unknown user control event should error");
-    assert_eq!(err.kind, ErrorKind::InvalidData);
+        .expect_err("未知のユーザーコントロールイベントのデコードは失敗する");
+    assert_eq!(err.kind, ErrorKind::InvalidData, "エラー種別が一致しない");
 }
 
 /// 不足バッファでは None を返すことを検証
@@ -93,6 +102,9 @@ fn insufficient_buffer_returns_none() {
     decoder.feed_buf(&[0]);
     let result = decoder
         .decode()
-        .expect("decode must not fail for partial input");
-    assert!(result.is_none());
+        .expect("途中までの入力のデコードは失敗しない");
+    assert!(
+        result.is_none(),
+        "メッセージが揃っていない場合は None になる"
+    );
 }

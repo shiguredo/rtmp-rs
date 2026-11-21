@@ -1,3 +1,5 @@
+//! RTMP のメッセージをチャンクストリームへエンコードするエンコーダーを提供するモジュール
+
 use alloc::vec::Vec;
 
 use crate::amf::{AmfValue, AmfVersion};
@@ -7,12 +9,30 @@ use crate::rtmp_chunk_encoder::RtmpChunkEncoder;
 use crate::rtmp_command::TransactionId;
 use crate::rtmp_message::RtmpMessage;
 
+/// RTMP メッセージのエンコーダー
+///
+/// メッセージをチャンクに分割し、引数で渡されたバイト列の末尾へ書き出す。
+/// チャンクストリームごとの送信状態を内部に保持するため、
+/// 同じ接続では同じエンコーダーを使い続ける。
 #[derive(Debug, Default)]
 pub struct RtmpMessageEncoder {
     chunk_encoder: RtmpChunkEncoder,
 }
 
 impl RtmpMessageEncoder {
+    /// メッセージをエンコードして `buf` の末尾に追加する
+    ///
+    /// `chunk_stream_id` はメッセージを伝送するチャンクストリームの ID である。
+    /// メッセージをチャンクへ分割する際のチャンクサイズには、
+    /// このエンコーダーが保持している値を使う。
+    ///
+    /// Set Chunk Size メッセージをエンコードした場合は、このメッセージ自身を
+    /// 現在のチャンクサイズでエンコードした後に、続くメッセージへ新しい
+    /// チャンクサイズを適用する（RTMP 仕様 5.4.1 節）。
+    ///
+    /// このクレート は Abort メッセージを送信しないため、Abort 送信に伴う
+    /// チャンクストリームの状態リセットは行わない。デコード側は相手から
+    /// Abort が届く可能性があるため対応している。
     pub fn encode(
         &mut self,
         buf: &mut Vec<u8>,
@@ -20,11 +40,11 @@ impl RtmpMessageEncoder {
         message: RtmpMessage,
     ) {
         let new_chunk_size = if let RtmpMessage::SetChunkSize { size, .. } = message {
-            // [NOTE]
+            // [補足]
             // SetChunkSize はメッセージのチャンクへのエンコード方法自体に影響するので、
             // 呼び出し元ではなく、このメソッド内でハンドリングする必要がある
             //
-            // なお、この crate 自体は Abort を発行することがないので、
+            // なお、このクレート 自体は Abort を発行することがないので、
             // そのハンドリングは入っていない
             // （デコード側は、相手が送信してくる可能性があるので対応が必要）
             Some(size)

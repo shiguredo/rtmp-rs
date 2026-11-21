@@ -1,11 +1,11 @@
-//! User Control Event Fuzzing
+//! ユーザーコントロールイベントのファジング
 //!
 //! RTMP 仕様 Section 6.2: User Control Messages
 //!
-//! User Control メッセージは message type 4 で送信される。
+//! User Control メッセージはメッセージ種別 4 で送信される。
 //! Event type (2 bytes) + Event data (variable) で構成される。
 //!
-//! Event types:
+//! イベント種別:
 //! - 0: StreamBegin
 //! - 1: StreamEof
 //! - 2: StreamDry
@@ -19,7 +19,7 @@
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;
-use shiguredo_rtmp::tests::RtmpUserControlEvent;
+use shiguredo_rtmp::rtmp_user_control_event::RtmpUserControlEvent;
 
 fuzz_target!(|data: &[u8]| {
     // User Control Event のデコードを試みる

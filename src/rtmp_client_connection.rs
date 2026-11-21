@@ -1,3 +1,5 @@
+//! RTMP の配信クライアント接続と再生クライアント接続の状態遷移を提供するモジュール
+
 use alloc::borrow::ToOwned;
 use alloc::collections::VecDeque;
 use alloc::string::{String, ToString};
@@ -245,7 +247,7 @@ impl RtmpClientConnection {
 
         // 相手から送信してくるデータに対する（こちらからの） ACK の間隔の要望（ヒント）を指定する
         //
-        // [NOTE] これへの返信として、相手からの win ack size を受信したタイミングで、こちらからの ACK の間隔が確定する
+        // [補足] これへの返信として、相手からの win ack size を受信したタイミングで、こちらからの ACK の間隔が確定する
         let message = RtmpMessage::set_peer_bandwidth(self.options.ack_window_size);
         self.message_channel.feed_send_message(message);
 
@@ -394,12 +396,12 @@ impl RtmpClientConnection {
             return Ok(());
         }
 
-        // Match transaction ID to determine which result this is
+        // トランザクション ID を照合して、どのコマンドの結果かを判定する
         if command.transaction_id == TransactionId::CONNECT {
             self.state.expect(RtmpConnectionState::Connecting)?;
             self.change_state(RtmpConnectionState::Connected)?;
         } else if command.transaction_id == TransactionId::NON_RESERVED_START {
-            // createStream result
+            // createStream の結果
             self.state.expect(RtmpConnectionState::Connected)?;
             self.change_state(RtmpConnectionState::MediaStreamCreated)?;
         } else {
@@ -480,11 +482,11 @@ impl RtmpClientConnection {
                     reason: "ACK not received within expected interval".to_owned(),
                 });
 
-            // [NOTE]
+            // [補足]
             // Disconnecting への遷移は常に成功するので、ここでは expect() を使ってしまう。
             // 利用側の利便性を考えると、返り値を不必要に Result にしたくないため。
             self.change_state(RtmpConnectionState::Disconnecting)
-                .expect("infallible");
+                .expect("transition to disconnecting always succeeds (implementation bug)");
         }
     }
 
