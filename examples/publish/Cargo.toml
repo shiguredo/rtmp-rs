@@ -18,14 +18,14 @@ rustls = {
   ]
 }
 # サーバ証明書のプラットフォーム検証に使用する
-rustls-platform-verifier = "0.6"
+rustls-platform-verifier = "0.7"
 # MP4 ファイルのトラック情報の読み取りに使用する
-shiguredo_mp4 = "2026.1"
+shiguredo_mp4 = "2026.5"
 # RTMP 配信に使用するライブラリ本体
 shiguredo_rtmp = { path = "../.." }
 # 非同期 I/O とイベントループに使用する
 tokio = {
-  version = "1.52",
+  version = "1.54",
   features = [
     "io-util",
     "macros",

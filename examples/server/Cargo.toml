@@ -21,7 +21,7 @@ rustls = {
 shiguredo_rtmp = { path = "../.." }
 # 非同期 I/O とイベントループに使用する
 tokio = {
-  version = "1.52",
+  version = "1.54",
   features = [
     "io-util",
     "macros",

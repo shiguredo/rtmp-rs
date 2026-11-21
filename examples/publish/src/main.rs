@@ -290,6 +290,10 @@ async fn run_publishing_loop(
                 )?;
                 sample_count += 1;
             }
+            shiguredo_mp4::TrackKind::Subtitle => {
+                // RTMP では字幕トラックを配信しないため何もしない
+                // (validate_codecs() で配信対象外にしているため、通常はここに到達しない)
+            }
         }
     }
 
