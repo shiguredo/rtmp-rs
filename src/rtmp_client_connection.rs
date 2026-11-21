@@ -10,7 +10,7 @@ use crate::rtmp_command::{RtmpCommand, RtmpConnectCommand, RtmpResultCommand, Tr
 use crate::rtmp_connection::{
     RtmpConnectionEvent, RtmpConnectionOptions, RtmpConnectionState, RtmpMessageChannel,
 };
-use crate::rtmp_handshake::RtmpClientHandshake;
+use crate::rtmp_handshake::{HANDSHAKE_BYTES, RtmpClientHandshake};
 use crate::rtmp_message::{RtmpMessage, RtmpMessageHeader, RtmpMessageStreamId};
 use crate::rtmp_timestamp::RtmpTimestamp;
 use crate::rtmp_url::RtmpUrl;
@@ -327,8 +327,10 @@ impl RtmpClientConnection {
             RtmpMessage::Ack {
                 sequence_number, ..
             } => {
-                // 相手から ACK を受け取ったことを通知
-                self.message_channel.notify_ack_received(sequence_number);
+                // C2 の送信完了前に届いた ACK は、送信待ちのチャンクを確認するものではない。
+                if self.handshake.is_send_complete() {
+                    self.message_channel.notify_ack_received(sequence_number);
+                }
                 Ok(())
             }
             RtmpMessage::SetPeerBandwidth { size, .. } => {
@@ -475,6 +477,10 @@ impl RtmpClientConnection {
     fn advance_send_buf(&mut self, n: usize) {
         if !self.handshake.is_send_complete() {
             self.handshake.advance_send_buf(n);
+            if self.handshake.is_send_complete() {
+                self.message_channel
+                    .set_handshake_bytes_sent(HANDSHAKE_BYTES);
+            }
         } else if !self.message_channel.advance_send_buf(n) {
             // 相手から ACK が期待通りに届いていないので切断する
             self.event_queue
