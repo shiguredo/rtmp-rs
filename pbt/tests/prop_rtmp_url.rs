@@ -1,4 +1,4 @@
-//! RTMP URL のパス・クエリ・フラグメント境界の性質テスト
+//! RTMP URL の authority・パス・クエリ・フラグメント境界の性質テスト
 
 use noprop::TestCaseContext;
 use shiguredo_rtmp::error::{Error, ErrorKind};
@@ -150,4 +150,156 @@ fn query_and_fragment_cannot_supply_missing_names() -> noprop::TestResult {
         Ok(())
     })?;
     Ok(())
+}
+
+mod authority {
+    use super::{CASES, Error, ErrorKind, RtmpUrl, SEED_ENV, TestCaseContext};
+
+    fn parse_authority(
+        scheme: &str,
+        authority: &str,
+    ) -> [(&'static str, Result<RtmpUrl, Error>); 2] {
+        [
+            (
+                "parse",
+                RtmpUrl::parse(&format!("{scheme}://{authority}/app/stream")),
+            ),
+            (
+                "parse_with_stream_name",
+                RtmpUrl::parse_with_stream_name(&format!("{scheme}://{authority}/app"), "stream"),
+            ),
+        ]
+    }
+
+    fn assert_malformed_authority(authority: &str) {
+        for (api, result) in parse_authority("rtmp", authority) {
+            assert!(
+                matches!(&result, Err(error) if error.kind == ErrorKind::InvalidInput),
+                "{api} は不正な authority {authority:?} を拒否するはず: {result:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn malformed_host_structures_are_rejected() -> noprop::TestResult {
+        assert_malformed_authority("[]");
+
+        let seed = noprop::seed_from_env_or_time(SEED_ENV)?;
+        noprop::Runner::new(seed).run(CASES, |ctx: &mut TestCaseContext| {
+            // 末尾の IPv6 セグメントは 10 進数字だけで表記し、ポートと誤認しやすい形を生成する。
+            let suffix = noprop::sample_u16_in(ctx, 0..=9999);
+            let ip = format!("2001:db8::{suffix}");
+            let host = format!("host{}.invalid", noprop::sample_u16(ctx));
+            // 内側の `[`、余分な `]`、ポートの区切り欠落を別々に検証する。
+            for authority in [
+                format!("::{suffix}"),
+                format!("2001:db8:0:0:0:0:0:{suffix}"),
+                format!("[{ip}"),
+                format!("[2001:[db8::{suffix}]"),
+                format!("[{ip}]]"),
+                format!("[{ip}]1935"),
+                format!("{host}["),
+                format!("{host}]:1935"),
+                ip,
+            ] {
+                assert_malformed_authority(&authority);
+            }
+            Ok(())
+        })?;
+        Ok(())
+    }
+
+    #[test]
+    fn unsupported_userinfo_is_rejected_without_echoing_values() -> noprop::TestResult {
+        let seed = noprop::seed_from_env_or_time(SEED_ENV)?;
+        noprop::Runner::new(seed).run(CASES, |ctx: &mut TestCaseContext| {
+            // 実在の認証情報ではなく合成した値で、拒否時に入力をエラーへ持ち込まないことを確認する。
+            let id = noprop::sample_u16(ctx);
+            let user = format!("synthetic-user-{id}");
+            let dummy = format!("synthetic-password-{id}");
+            let host = format!("host%40{id}.invalid");
+            // 生の `@` はブラケット内や明示ポート部分でも拒否し、同じ authority の `%40` には影響されない。
+            for (case, authority) in [
+                ("ユーザー名のみ", format!("{user}@{host}")),
+                ("パスワード付き", format!("{user}:{dummy}@{host}")),
+                ("ブラケット内", format!("[2001:db8::{user}@{dummy}]")),
+                ("明示ポート部分", format!("[::1]:{user}@{dummy}")),
+            ] {
+                for (api, result) in parse_authority("rtmp", &authority) {
+                    let Err(error) = result else {
+                        panic!("{api} は {case} の生の `@` を拒否するはず");
+                    };
+                    assert_eq!(
+                        error.kind,
+                        ErrorKind::InvalidInput,
+                        "{api} の {case} のエラー種別"
+                    );
+                    assert!(
+                        !error.reason.contains(&user) && !error.reason.contains(&dummy),
+                        "{api} の {case} のエラーにユーザー情報の値を含めない"
+                    );
+                }
+            }
+
+            // エスケープされた `@` や authority の外側にある `@` は区切りにしない。
+            let parsed = RtmpUrl::parse(&format!("rtmp://{host}/app@media/stream?tag=@sample"))
+                .expect("authority 外の記号は許容されるはず");
+            assert_eq!(parsed.host, host);
+            assert_eq!(parsed.app, "app@media");
+            assert_eq!(parsed.stream_name, "stream?tag=@sample");
+            let parsed = RtmpUrl::parse_with_stream_name(
+                &format!("rtmp://{host}/app@media?tag=@sample"),
+                "stream@media",
+            )
+            .expect("クエリと別引数の記号は許容されるはず");
+            assert_eq!(parsed.host, host);
+            assert_eq!(parsed.app, "app@media?tag=@sample");
+            assert_eq!(parsed.stream_name, "stream@media");
+            Ok(())
+        })?;
+        Ok(())
+    }
+
+    #[test]
+    fn bracketed_host_spelling_and_ports_are_preserved() -> noprop::TestResult {
+        // 明示ポートを持つ基本形は、どちらの API でも同じホストとポートを返す。
+        for (host, port_text, port) in [
+            ("host", "1935", 1935),
+            ("[::1]", "1935", 1935),
+            // 明示ポートを無視する退行を検出するため、既定値でない値も使う。
+            ("host", "1936", 1936),
+            ("[::1]", "1936", 1936),
+            // IPvFuture のように `:` を含まないリテラルも、構造だけを検証して表記を保持する。
+            ("[v1.Example]", "1936", 1936),
+            // `+` を許すのは、字句を直接 `u16` に変換するブラケット付きホストだけ。
+            ("[::1]", "+1936", 1936),
+        ] {
+            for (api, result) in parse_authority("rtmp", &format!("{host}:{port_text}")) {
+                let parsed = result.expect("明示ポートを持つ URL は有効なはず");
+                assert_eq!(parsed.host, host, "{api} のホスト");
+                assert_eq!(parsed.port, port, "{api} のポート");
+            }
+        }
+        assert_malformed_authority("host:+1936");
+
+        let seed = noprop::seed_from_env_or_time(SEED_ENV)?;
+        noprop::Runner::new(seed).run(CASES, |ctx: &mut TestCaseContext| {
+            let host = format!("[2001:Db8:aB::{:X}]", noprop::sample_u16(ctx));
+            for (scheme, default_port) in [("rtmp", 1935), ("rtmps", 443)] {
+                // ポート省略時もブラケット・大文字小文字を保持し、整形から値を復元できる。
+                for (api, result) in parse_authority(scheme, &host) {
+                    let parsed = result.expect("ブラケットで囲んだホストは有効なはず");
+                    assert_eq!(parsed.host, host, "{api} のホスト");
+                    assert_eq!(parsed.port, default_port, "{api} の既定ポート");
+                    assert_eq!(
+                        RtmpUrl::parse(&parsed.to_string()).expect("整形した URL は有効なはず"),
+                        parsed,
+                        "ブラケット付きホストは整形と再解析で変化しない"
+                    );
+                }
+            }
+            Ok(())
+        })?;
+        Ok(())
+    }
 }

@@ -29,6 +29,9 @@
 - [FIX] RTMP URL のクエリやフラグメント内の `/` で app と stream が誤分割される問題を修正する
   - @voluntas
 
+- [FIX] RTMP URL でブラケットなしの IPv6、不正なブラケット構造、ユーザー情報を拒否する
+  - @voluntas
+
 ### misc
 
 - [UPDATE] PBT を proptest から noprop に移行する

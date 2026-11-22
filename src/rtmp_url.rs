@@ -15,9 +15,19 @@ use crate::Error;
 /// もしストリーム名を URL 文字列とは別に指定したい場合には [`RtmpUrl::parse_with_stream_name()`] を使用してください。
 ///
 /// [`fmt::Display`] はポートを常に明示し、保持している名前を再エスケープせずに出力します。
+///
+/// # ホストとポートの解析
+///
+/// IPv6 のように `:` を含むホストは、ホスト全体を一対の `[` と `]` で囲む必要があります。
+/// ホスト名およびブラケットの内側は非空でなければなりませんが、その書式までは検証しません。
+/// ユーザー情報はサポートしないため、authority にエスケープされていない `@` がある URL は拒否します。
+/// このとき、入力値は解析エラーに含めません。
+///
+/// ポートを明示する場合は、ホストの後ろに `:` と `u16` に変換できる値が必要です。
+/// ブラケットのないホストに続くポート番号は ASCII 数字に限ります。
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct RtmpUrl {
-    /// RTMP サーバーのホスト名または IP アドレス
+    /// RTMP サーバーのホスト名または IP アドレス。URL から解析したブラケット付きホストは元の表記を保持します。
     pub host: String,
 
     /// RTMP サーバーのポート番号
@@ -122,13 +132,12 @@ impl RtmpUrl {
             }
         };
 
-        // ホスト・ポート部分とパス部分
-        let (host_port, path) = rest
+        // 呼び出し元でクエリとフラグメントを外しているため、最初の `/` で分けられる。
+        let (authority, path) = rest
             .split_once('/')
             .ok_or_else(|| Error::invalid_input("missing '/' separator for app name"))?;
 
-        // ホストとポート
-        let (host, port) = parse_host_port(host_port, tls)?;
+        let (host, port) = parse_host_port(authority, tls)?;
 
         if host.is_empty() {
             return Err(Error::invalid_input("host cannot be empty"));
@@ -168,46 +177,49 @@ fn split_query_and_discard_fragment(s: &str) -> (&str, &str) {
         })
 }
 
-fn parse_host_port(host_port: &str, tls: bool) -> Result<(&str, u16), Error> {
-    // ポート番号が含まれているかチェック
-    // IPv6 アドレスの場合は ] の後ろにポートがある
-    let (host, port_str) = if host_port.starts_with('[') {
-        // IPv6 アドレスの場合: [::1]:1935
-        if let Some(bracket_end) = host_port.find(']') {
-            let host = &host_port[..=bracket_end];
-            let remainder = &host_port[bracket_end + 1..];
+fn parse_host_port(authority: &str, tls: bool) -> Result<(&str, u16), Error> {
+    // RFC 3986 の §3.2.1 - §3.2.3 を境界の根拠とする。後継仕様を採用するときは見直す。
+    // `@` はユーザー情報の区切り。未対応の値をエラーに含めない。
+    if authority.contains('@') {
+        return Err(Error::invalid_input(
+            "userinfo is not supported in RTMP URLs",
+        ));
+    }
 
-            if remainder.is_empty() {
-                // ポート番号なし
-                (host, None)
-            } else if let Some(remainder) = remainder.strip_prefix(':') {
-                // ポート番号あり
-                (host, Some(remainder))
-            } else {
-                return Err(Error::invalid_input(
-                    "invalid format after IPv6 address, expected ':' before port",
-                ));
-            }
-        } else {
-            return Err(Error::invalid_input(
-                "invalid IPv6 address format, missing ']'",
-            ));
+    // ホストの中身は検証せず、ブラケットの構造とポートの境界だけを確認する。
+    let (host, port_str) = if authority.starts_with('[') {
+        let bracket_end = authority
+            .find(']')
+            .ok_or_else(|| Error::invalid_input("invalid bracketed host, missing ']'"))?;
+        let address = &authority[1..bracket_end];
+        if address.is_empty() || address.contains('[') {
+            return Err(Error::invalid_input("invalid bracketed host"));
         }
+
+        let (host, remainder) = authority.split_at(bracket_end + 1);
+        // ブラケット付きの明示ポートは従来どおり字句を絞らず、`u16` の変換に委ねる。
+        let port_str = if remainder.is_empty() {
+            None
+        } else {
+            Some(remainder.strip_prefix(':').ok_or_else(|| {
+                Error::invalid_input(
+                    "invalid format after bracketed host, expected ':' before port",
+                )
+            })?)
+        };
+        (host, port_str)
     } else {
-        // IPv4 またはホスト名
-        if let Some(colon_pos) = host_port.rfind(':') {
-            // ':' が見つかった場合、ポート番号がある可能性
-            let potential_port = &host_port[colon_pos + 1..];
-            // ポート部分が数字のみか確認（IPv6でない場合）
-            if potential_port.chars().all(|c| c.is_ascii_digit()) {
-                (&host_port[..colon_pos], Some(potential_port))
-            } else {
-                // IPv6 で '[' がない不正な形式
+        if authority.contains(['[', ']']) {
+            return Err(Error::invalid_input("unexpected bracket in authority"));
+        }
+        if let Some((host, port_str)) = authority.split_once(':') {
+            // 最初の `:` だけを区切りにすれば、複数の `:` は数字の検査で拒否される。
+            if !port_str.bytes().all(|byte| byte.is_ascii_digit()) {
                 return Err(Error::invalid_input("invalid host:port format"));
             }
+            (host, Some(port_str))
         } else {
-            // ':' がない（ポート番号なし）
-            (host_port, None)
+            (authority, None)
         }
     };
 
