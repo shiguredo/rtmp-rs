@@ -290,34 +290,25 @@ fn sample_avc_packet_type(ctx: &mut TestCaseContext) -> AvcPacketType {
     )
 }
 
-/// VideoFrame を生成するサンプラー
-///
-/// 注意:
-/// - avc_packet_type は codec == Avc かつ frame_type != VideoInfoOrCommandFrame の場合のみ有効 (かつ必須)
-/// - 非 Avc コーデック または VideoInfoOrCommandFrame では avc_packet_type は None
-/// - composition_timestamp_offset は avc_packet_type が Some の場合のみエンコードされる
-/// - composition_timestamp_offset は i24 範囲 (-8388608 ~ 8388607 ms) である必要がある
+/// ワイヤ形式で表現できるフィールドを持つ VideoFrame を生成する
 fn sample_video_frame(ctx: &mut TestCaseContext) -> VideoFrame {
     let timestamp_ms = noprop::sample_u32(ctx);
-    // composition offset (i24 範囲)
-    let composition_offset = noprop::sample_i32_in(ctx, -8388608..=8388607);
     let frame_type = sample_video_frame_type(ctx);
     let codec = sample_video_codec(ctx);
-    let avc_type = sample_avc_packet_type(ctx);
     let data_len = noprop::sample_usize_in(ctx, 0..256);
     let data = noprop::sample_bytes_vec(ctx, data_len);
 
-    // AVC コーデックかつ VideoInfoOrCommandFrame でない場合のみ avc_packet_type を設定する。
-    // FLV 仕様: VideoInfoOrCommandFrame は AVC でも avc_packet_type を持たない
-    let (avc_packet_type, composition_timestamp_offset) =
-        if codec == VideoCodec::Avc && frame_type != VideoFrameType::VideoInfoOrCommandFrame {
-            (
-                Some(avc_type),
-                RtmpTimestampDelta::from_millis(composition_offset),
-            )
-        } else {
-            (None, RtmpTimestampDelta::ZERO)
-        };
+    // Adobe FLV 仕様 10.1 §E.4.3.1 では CodecID だけで AVC 追加ヘッダーの有無を決める。
+    // フレームタイプによる例外が仕様に追加された場合は、生成条件も見直す。
+    let (avc_packet_type, composition_timestamp_offset) = if codec == VideoCodec::Avc {
+        let composition_offset = noprop::sample_i32_in(ctx, -8_388_608..=8_388_607);
+        (
+            Some(sample_avc_packet_type(ctx)),
+            RtmpTimestampDelta::from_millis(composition_offset),
+        )
+    } else {
+        (None, RtmpTimestampDelta::ZERO)
+    };
     VideoFrame {
         timestamp: RtmpTimestamp::from_millis(timestamp_ms),
         composition_timestamp_offset,
@@ -503,9 +494,6 @@ fn sample_video_message(ctx: &mut TestCaseContext) -> RtmpMessage {
     let mut frame = sample_video_frame(ctx);
     // frame.timestamp は header.timestamp と一致させる (decode 時の挙動に合わせる)
     frame.timestamp = header.timestamp;
-    if frame.avc_packet_type.is_none() {
-        frame.composition_timestamp_offset = RtmpTimestampDelta::ZERO;
-    }
     RtmpMessage::Video { header, frame }
 }
 
@@ -873,7 +861,9 @@ fn roundtrip_test(message: RtmpMessage) {
     let mut encoder = RtmpMessageEncoder::default();
     let mut buf = Vec::new();
 
-    encoder.encode(&mut buf, chunk_stream_id, message.clone());
+    encoder
+        .encode(&mut buf, chunk_stream_id, message.clone())
+        .expect("生成した RTMP メッセージはエンコードできるはず");
 
     let mut decoder = RtmpMessageDecoder::default();
     decoder.feed_buf(&buf);

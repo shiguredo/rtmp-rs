@@ -14,6 +14,9 @@
 - [CHANGE] MSRV (rust-version) を 1.95 に上げる
   - @voluntas
 
+- [CHANGE] `encode_video_frame`、`RtmpMessageEncoder::encode`、`RtmpMessageChannel::feed_send_message` の戻り値を `Result<(), Error>` にする
+  - @voluntas
+
 - [ADD] RTMP の各要素をモジュールとして公開 API に追加する
   - @voluntas
 
@@ -30,6 +33,9 @@
   - @voluntas
 
 - [FIX] RTMP URL でブラケットなしの IPv6、不正なブラケット構造、ユーザー情報を拒否する
+  - @voluntas
+
+- [FIX] FLV の AVC 追加ヘッダーをコマンドフレームでも読み書きし、コーデックとパケットタイプが矛盾する送信を拒否する
   - @voluntas
 
 ### misc

@@ -22,8 +22,9 @@ fuzz_target!(|data: &[u8]| {
 
     // ビデオフレームのデコードを試みる
     if let Ok(frame) = decode_video_frame(data, timestamp) {
-        // デコード成功した場合、エンコードも試みる
+        // デコードに成功したフレームのコーデックと AVC パケットタイプは矛盾しない。
         let mut encoded = Vec::new();
-        encode_video_frame(&mut encoded, &frame);
+        encode_video_frame(&mut encoded, &frame)
+            .expect("デコードした映像フレームのエンコードは失敗しない");
     }
 });

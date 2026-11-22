@@ -82,8 +82,12 @@ fn client_does_not_count_a_handshake_only_ack_as_chunk_progress() {
 
     // 実際に送ったのはハンドシェイクだけ。C2 の送信通知より先にその ACK が届く。
     let mut control = RtmpMessageChannel::default();
-    control.feed_send_message(RtmpMessage::ack(handshake_len));
-    control.feed_send_message(RtmpMessage::set_peer_bandwidth(ACK_WINDOW));
+    control
+        .feed_send_message(RtmpMessage::ack(handshake_len))
+        .expect("ACK を送信バッファに追加できるはず");
+    control
+        .feed_send_message(RtmpMessage::set_peer_bandwidth(ACK_WINDOW))
+        .expect("帯域設定を送信バッファに追加できるはず");
     client
         .feed_recv_buf(control.send_buf())
         .expect("クライアントが制御メッセージを受信できるはず");
@@ -157,7 +161,11 @@ fn ack_and_reduce_window(handshake_len: u32, sent: u32) -> RtmpMessageChannel {
     // 送信済みの全チャンクとハンドシェイクの合計を ACK に入れ、次の送信分の閾値を 2 バイトにする。
     // ハンドシェイク長を正しく差し引けば、次の 2 バイトはちょうど閾値で収まる。
     let mut control = RtmpMessageChannel::default();
-    control.feed_send_message(RtmpMessage::ack(handshake_len + sent));
-    control.feed_send_message(RtmpMessage::set_peer_bandwidth(ACK_WINDOW));
+    control
+        .feed_send_message(RtmpMessage::ack(handshake_len + sent))
+        .expect("ACK を送信バッファに追加できるはず");
+    control
+        .feed_send_message(RtmpMessage::set_peer_bandwidth(ACK_WINDOW))
+        .expect("帯域設定を送信バッファに追加できるはず");
     control
 }

@@ -112,33 +112,52 @@ pub fn decode_audio_frame(buf: &[u8], timestamp: RtmpTimestamp) -> Result<AudioF
 
 /// 映像フレームを FLV の映像タグの形式で `buf` の末尾に書き込む
 ///
-/// 映像タグのヘッダー（VideoTagHeader）にフレームタイプとコーデックを書き込み、
-/// その後に映像データを書き込む。`avc_packet_type` が `Some` の場合は、
-/// AVC パケットタイプと合成タイムスタンプオフセット（CompositionTime）も書き込む
-/// （FLV 仕様 E.4.3 節）。
-pub fn encode_video_frame(buf: &mut Vec<u8>, frame: &VideoFrame) {
-    // フレームタイプとコーデックを組み合わせたバイトを構築
+/// フレームタイプとコーデックに続け、AVC の場合だけパケットタイプと
+/// 合成タイムスタンプオフセット（CompositionTime）を書き込む。
+/// [`VideoFrame::data`] はその後にそのまま書き込む。コマンドフレームでも同じ順序を使う。
+///
+/// # エラー
+///
+/// AVC で `avc_packet_type` が `None`、または非 AVC で `Some` の場合は
+/// [`crate::error::ErrorKind::InvalidInput`] を返し、`buf` を変更しない。
+pub fn encode_video_frame(buf: &mut Vec<u8>, frame: &VideoFrame) -> Result<(), Error> {
+    // Adobe FLV 仕様 10.1 の E.4.3.1 節では CodecID == 7 の場合だけ AVC 追加ヘッダーがある。
+    // 他の映像タグ仕様を採用するときは、この条件とデコード側の条件を見直す。
+    let avc_packet_type = match (frame.codec, frame.avc_packet_type) {
+        (VideoCodec::Avc, Some(packet_type)) => Some(packet_type),
+        (VideoCodec::Avc, None) => {
+            return Err(Error::invalid_input(
+                "AVC video requires an AVC packet type",
+            ));
+        }
+        (_, None) => None,
+        (_, Some(_)) => {
+            return Err(Error::invalid_input(
+                "AVC packet type is not allowed for non-AVC video",
+            ));
+        }
+    };
+
     let frame_type_codec = ((frame.frame_type as u8) << 4) | (frame.codec as u8);
     buf.write_u8(frame_type_codec);
-
-    // AVC パケットタイプが設定されている場合、AVC 固有の情報を書き込む
-    if let Some(avc_packet_type) = frame.avc_packet_type {
+    if let Some(avc_packet_type) = avc_packet_type {
         buf.write_u8(avc_packet_type as u8);
         buf.write_i24(frame.composition_timestamp_offset.as_millis());
     }
-
-    // ビデオデータを書き込む
     buf.write_bytes(&frame.data);
+    Ok(())
 }
 
 /// FLV の映像タグをデコードして [`VideoFrame`] を返す
 ///
-/// 映像タグのヘッダー（VideoTagHeader）からフレームタイプとコーデックを読み取り、
-/// 残りのバイト列を映像データとして扱う。`timestamp` はフレームのタイムスタンプとして
-/// そのまま設定される。コーデックが AVC で、フレームタイプが
-/// `VideoInfoOrCommandFrame` でない場合は、AVC パケットタイプと合成タイムスタンプ
-/// オフセット（CompositionTime）も読み取る。未知のフレームタイプ・コーデック・
-/// AVC パケットタイプの場合は [`Error`] を返す（FLV 仕様 E.4.3 節）。
+/// フレームタイプとコーデックを読み取り、AVC の場合だけパケットタイプと合成タイムスタンプ
+/// オフセット（CompositionTime）も読み取る。コマンドフレームでもヘッダーは同じであり、
+/// 残りのバイト列を [`VideoFrame::data`] として扱う。`timestamp` はそのまま設定する。
+///
+/// # エラー
+///
+/// ヘッダーが途中で終わっているか、フレームタイプ、コーデック、AVC パケットタイプが未知の値なら
+/// [`Error`] を返す。
 pub fn decode_video_frame(buf: &[u8], timestamp: RtmpTimestamp) -> Result<VideoFrame, Error> {
     let mut reader = buf;
 
@@ -179,28 +198,28 @@ pub fn decode_video_frame(buf: &[u8], timestamp: RtmpTimestamp) -> Result<VideoF
         }
     };
 
-    // コーデックが AVC で、フレームタイプが VideoInfoOrCommandFrame でない場合
-    let (avc_packet_type, composition_timestamp_offset) =
-        if codec == VideoCodec::Avc && frame_type != VideoFrameType::VideoInfoOrCommandFrame {
-            let avc_packet_type_byte = reader.read_u8()?;
-            let avc_packet_type = match avc_packet_type_byte {
-                0 => AvcPacketType::SequenceHeader,
-                1 => AvcPacketType::NalUnit,
-                2 => AvcPacketType::EndOfSequence,
-                _ => {
-                    return Err(Error::invalid_data(format!(
-                        "Invalid AVC packet type: {}",
-                        avc_packet_type_byte
-                    )));
-                }
-            };
-
-            let composition_timestamp_offset = RtmpTimestampDelta::from_millis(reader.read_i24()?);
-            (Some(avc_packet_type), composition_timestamp_offset)
-        } else {
-            // AVC 以外のコーデックや VideoInfoOrCommandFrame の場合
-            (None, RtmpTimestampDelta::ZERO)
+    // Adobe FLV 仕様 10.1 の E.4.3.1 節で、FrameType == 5 はボディだけを変更する。
+    // AVC 追加ヘッダーはエンコード側と同じ CodecID 条件で読み、コマンドはボディに残す。
+    // 他の映像タグ仕様を採用するときは、この切り分けを見直す。
+    let (avc_packet_type, composition_timestamp_offset) = if codec == VideoCodec::Avc {
+        let avc_packet_type_byte = reader.read_u8()?;
+        let avc_packet_type = match avc_packet_type_byte {
+            0 => AvcPacketType::SequenceHeader,
+            1 => AvcPacketType::NalUnit,
+            2 => AvcPacketType::EndOfSequence,
+            _ => {
+                return Err(Error::invalid_data(format!(
+                    "Invalid AVC packet type: {}",
+                    avc_packet_type_byte
+                )));
+            }
         };
+
+        let composition_timestamp_offset = RtmpTimestampDelta::from_millis(reader.read_i24()?);
+        (Some(avc_packet_type), composition_timestamp_offset)
+    } else {
+        (None, RtmpTimestampDelta::ZERO)
+    };
 
     // 残りのビデオデータを読み込む
     let data = reader.to_vec();

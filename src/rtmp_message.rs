@@ -419,7 +419,9 @@ mod tests {
         let mut encoder = RtmpMessageEncoder::default();
         let mut buf = Vec::new();
 
-        encoder.encode(&mut buf, chunk_stream_id, message);
+        encoder
+            .encode(&mut buf, chunk_stream_id, message)
+            .expect("有効なメッセージのエンコードは失敗しないはず");
 
         let mut decoder = RtmpMessageDecoder::default();
 

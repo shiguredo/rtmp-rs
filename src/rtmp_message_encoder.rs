@@ -4,6 +4,7 @@ use alloc::vec::Vec;
 
 use crate::amf::{AmfValue, AmfVersion};
 use crate::bytes::BytesWriter;
+use crate::error::Error;
 use crate::rtmp_chunk::{RtmpChunk, RtmpChunkStreamId};
 use crate::rtmp_chunk_encoder::RtmpChunkEncoder;
 use crate::rtmp_command::TransactionId;
@@ -33,12 +34,17 @@ impl RtmpMessageEncoder {
     /// このクレート は Abort メッセージを送信しないため、Abort 送信に伴う
     /// チャンクストリームの状態リセットは行わない。デコード側は相手から
     /// Abort が届く可能性があるため対応している。
+    ///
+    /// # エラー
+    ///
+    /// 映像フレームが [`crate::flv::encode_video_frame`] の入力条件を満たさない場合は、
+    /// `buf` とチャンクのエンコード状態を変更せずにエラーを返す。
     pub fn encode(
         &mut self,
         buf: &mut Vec<u8>,
         chunk_stream_id: RtmpChunkStreamId,
         message: RtmpMessage,
-    ) {
+    ) -> Result<(), Error> {
         let new_chunk_size = if let RtmpMessage::SetChunkSize { size, .. } = message {
             // [補足]
             // SetChunkSize はメッセージのチャンクへのエンコード方法自体に影響するので、
@@ -52,33 +58,35 @@ impl RtmpMessageEncoder {
             None
         };
 
-        let chunk = self.message_to_chunk(chunk_stream_id, message);
+        // ペイロードの検証が通るまで、送信先バッファとチャンクの圧縮状態には触れない。
+        let chunk = self.message_to_chunk(chunk_stream_id, message)?;
         self.chunk_encoder.encode(buf, &chunk);
 
         if let Some(size) = new_chunk_size {
             self.chunk_encoder.set_chunk_size(size);
         }
+        Ok(())
     }
 
     fn message_to_chunk(
         &self,
         chunk_stream_id: RtmpChunkStreamId,
         message: RtmpMessage,
-    ) -> RtmpChunk {
+    ) -> Result<RtmpChunk, Error> {
         let header = message.header();
         let message_type = message.message_type();
         let mut payload = Vec::new();
-        self.encode_message_payload(&mut payload, message);
-        RtmpChunk {
+        self.encode_message_payload(&mut payload, message)?;
+        Ok(RtmpChunk {
             chunk_stream_id,
             message_stream_id: header.stream_id,
             message_type,
             timestamp: header.timestamp,
             payload,
-        }
+        })
     }
 
-    fn encode_message_payload(&self, buf: &mut Vec<u8>, message: RtmpMessage) {
+    fn encode_message_payload(&self, buf: &mut Vec<u8>, message: RtmpMessage) -> Result<(), Error> {
         match message {
             RtmpMessage::SetChunkSize { size, .. } => {
                 buf.write_u32(size.get() as u32);
@@ -106,7 +114,7 @@ impl RtmpMessageEncoder {
                 crate::flv::encode_audio_frame(buf, &frame);
             }
             RtmpMessage::Video { frame, .. } => {
-                crate::flv::encode_video_frame(buf, &frame);
+                crate::flv::encode_video_frame(buf, &frame)?;
             }
             RtmpMessage::Data { values, .. } => {
                 self.encode_data_payload(buf, &values);
@@ -125,6 +133,7 @@ impl RtmpMessageEncoder {
                 self.encode_command(buf, amf_version, &name, transaction_id, &object, &args);
             }
         }
+        Ok(())
     }
 
     fn encode_command(
