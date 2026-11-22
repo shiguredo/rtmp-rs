@@ -13,6 +13,8 @@ use crate::Error;
 ///
 /// [`core::str::FromStr`] の実装では [`RtmpUrl::parse()`] が使用されます。
 /// もしストリーム名を URL 文字列とは別に指定したい場合には [`RtmpUrl::parse_with_stream_name()`] を使用してください。
+///
+/// [`fmt::Display`] はポートを常に明示し、保持している名前を再エスケープせずに出力します。
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct RtmpUrl {
     /// RTMP サーバーのホスト名または IP アドレス
@@ -34,13 +36,22 @@ pub struct RtmpUrl {
 impl RtmpUrl {
     /// ストリーム名を含む RTMP URL をパースします: `rtmp[s]://host[:port]/app/stream_name`
     ///
-    /// パス部分に複数の `/` が含まれる場合、最後の `/` でアプリケーション名とストリーム名に分割されます
+    /// パス部分に複数の `/` が含まれる場合、最後の `/` でアプリケーション名とストリーム名に分割されます。
+    /// パス部分に非空のアプリケーション名とストリーム名が必要です。
+    /// クエリは区切りの `?` ごとストリーム名に残し、フラグメントは破棄します。
+    /// パーセントデコードは行いません。
     ///
     /// ポートが省略された場合、デフォルトポートが使用されます:
     /// - rtmp: 1935
     /// - rtmps: 443
+    ///
+    /// # エラー
+    ///
+    /// URL の形式が無効な場合や、パス部分に必要な名前がない場合は
+    /// [`crate::error::ErrorKind::InvalidInput`] を返します。
     pub fn parse(s: &str) -> Result<Self, Error> {
-        let (tls, host, port, path) = Self::parse_scheme_and_host_port(s)?;
+        let (url_without_suffix, query_suffix) = split_query_and_discard_fragment(s);
+        let (tls, host, port, path) = Self::parse_scheme_and_host_port(url_without_suffix)?;
 
         let (app, stream_name) = path
             .rsplit_once('/')
@@ -56,18 +67,29 @@ impl RtmpUrl {
             host: host.to_owned(),
             port,
             app: app.to_owned(),
-            stream_name: stream_name.to_owned(),
+            stream_name: [stream_name, query_suffix].concat(),
             tls,
         })
     }
 
     /// ストリーム名を別途指定して RTMP URL をパースします: `rtmp[s]://host[:port]/app`
     ///
+    /// 最初の `/` を除いた非空のパス全体をアプリケーション名とし、クエリは区切りの `?` ごと残します。
+    /// フラグメントは破棄し、パーセントデコードは行いません。別途指定された非空のストリーム名は加工しません。
+    /// アプリケーション名にクエリが残る場合や、別途指定した名前に `/`、`?`、`#` が含まれる場合、
+    /// [`fmt::Display`] と [`Self::parse()`] の往復は保証しません。
+    ///
     /// ポートが省略された場合、デフォルトポートが使用されます:
     /// - rtmp: 1935
     /// - rtmps: 443
+    ///
+    /// # エラー
+    ///
+    /// URL の形式が無効な場合や、パス部分または別途指定したストリーム名が空の場合は
+    /// [`crate::error::ErrorKind::InvalidInput`] を返します。
     pub fn parse_with_stream_name(s: &str, stream_name: &str) -> Result<Self, Error> {
-        let (tls, host, port, app) = Self::parse_scheme_and_host_port(s)?;
+        let (url_without_suffix, query_suffix) = split_query_and_discard_fragment(s);
+        let (tls, host, port, app) = Self::parse_scheme_and_host_port(url_without_suffix)?;
 
         if app.is_empty() {
             return Err(Error::invalid_input("app name cannot be empty"));
@@ -79,7 +101,7 @@ impl RtmpUrl {
         Ok(RtmpUrl {
             host: host.to_owned(),
             port,
-            app: app.to_owned(),
+            app: [app, query_suffix].concat(),
             stream_name: stream_name.to_owned(),
             tls,
         })
@@ -133,6 +155,17 @@ impl FromStr for RtmpUrl {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         Self::parse(s)
     }
+}
+
+fn split_query_and_discard_fragment(s: &str) -> (&str, &str) {
+    // RFC 3986 の §3.2 - §3.5 では、クエリとフラグメントの `/` はパスの区切りにならない。
+    // フラグメント内の `?` を誤認しないよう先にフラグメントを除く。後継仕様を採用するときはこの分離順を見直す。
+    let without_fragment = s.split_once('#').map_or(s, |(before, _)| before);
+    without_fragment
+        .find('?')
+        .map_or((without_fragment, ""), |index| {
+            without_fragment.split_at(index)
+        })
 }
 
 fn parse_host_port(host_port: &str, tls: bool) -> Result<(&str, u16), Error> {
