@@ -1,7 +1,7 @@
 # RTMP URL の query / fragment 内のスラッシュで app / stream の分割が壊れる問題を修正する
 
 - Created: 2026-11-22
-- Completed: {YYYY-MM-DD}
+- Completed: 2026-11-23
 - Branch: feature/fix-rtmp-url-query-split
 - Polished: 2026-11-22
 
@@ -42,6 +42,6 @@ RTMP URL の query や fragment にスラッシュが含まれていても、app
 
 ## 解決方法
 
-1. `src/rtmp_url.rs` の `RtmpUrl::parse` と `RtmpUrl::parse_with_stream_name` が共有する URL の分離処理で、authority とパスを切り出す前に query / fragment の境界を確定する。
-2. 各 API でパスから必要な名前を取り出して検証した後、設計方針に従って query を保持する。
-3. 各解析 API の doc コメントに query / fragment の扱いを明記し、完了条件の回帰テストを追加する。
+- `RtmpUrl` の両解析 API で、authority とパスを分ける前に fragment を除き、query を区切りの `?` ごと切り出すようにした。必要な名前が非空であることをパスで確認した後、`parse` では query を `stream_name` に、`parse_with_stream_name` では `app` に残す。別引数のストリーム名は加工しない。
+- 公開 API の文書に query / fragment の扱い、空の名前を拒否するエラー種別、別引数で名前を指定した場合の整形と再解析の制約を記載した。公開フィールドの定義、整形処理、RTMP コマンドの生成は変更していない。
+- 公開 API の性質テスト `prop_rtmp_url` を追加した。通常の query、必要な名前の欠落、末尾のスラッシュ、空の query / fragment、パーセント表記、別引数の保持を確認した。
