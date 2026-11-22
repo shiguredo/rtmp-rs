@@ -26,6 +26,9 @@
 - [FIX] サーバーが C2 を先に受信すると S2 の送信が止まる問題を修正する
   - @voluntas
 
+- [FIX] RTMP URL のクエリやフラグメント内の `/` で app と stream が誤分割される問題を修正する
+  - @voluntas
+
 ### misc
 
 - [UPDATE] PBT を proptest から noprop に移行する
