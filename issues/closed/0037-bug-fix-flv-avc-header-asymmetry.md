@@ -1,7 +1,7 @@
 # FLV 映像タグの AVC ヘッダー条件のエンコードとデコードの非対称を修正する
 
 - Created: 2026-11-22
-- Completed: {YYYY-MM-DD}
+- Completed: 2026-11-23
 - Branch: feature/fix-flv-avc-header-asymmetry
 - Polished: 2026-11-22
 
@@ -38,6 +38,6 @@ legacy FLV の映像タグで、AVC 追加ヘッダーの有無をエンコー�
 
 ## 解決方法
 
-1. `src/flv.rs` の `encode_video_frame` と `decode_video_frame` に同じ CodecID 条件を適用し、エンコード前にパケットタイプの有無を検証する。関連する doc コメントも更新する。
-2. RTMP メッセージのペイロード生成から送信バッファへの追加処理と接続 API までエラーを伝播し、FLV / RTMP の公開エンコード API の呼び出し元で戻り値を処理する。
-3. `prop_flv` と `prop_rtmp_message` の `sample_video_frame` を新条件に合わせ、コマンド型を除外する古い仕様説明を修正する。`fuzz_flv` を含む Result 化の影響箇所を更新し、追加の拒否条件とワイヤ配置の回帰を確認する。
+- `encode_video_frame` と `decode_video_frame` の両方で、フレームタイプを問わず AVC の場合だけ追加ヘッダーを扱う。コマンドはヘッダーの後ろにそのまま置く。コーデックと AVC パケットタイプの有無が矛盾する場合は、書き込み前に `InvalidInput` を返す。公開型の文書ではヘッダーとコマンドのボディを区別した。
+- `encode_video_frame`、`RtmpMessageEncoder::encode`、`RtmpMessageChannel::feed_send_message` は `Result<(), Error>` を返す。ペイロード生成に失敗した場合はチャンクの出力・状態更新をせず、配信クライアントとサーバーの `send_video` も同じエラーを返す。
+- FLV と RTMP の往復用の生成条件を更新し、符号化・復号のワイヤ配置、短い AVC ヘッダーの拒否、誤った指定での送信バッファと後続チャンクの不変を公開 API のテストで確認した。fuzz ターゲットも戻り値の変更に対応した。

@@ -339,10 +339,15 @@ impl RtmpMessageChannel {
     /// メッセージをチャンクにエンコードして送信バッファの末尾に追加する
     ///
     /// メッセージのストリーム ID に対応するチャンクストリーム ID が使用される。
-    pub fn feed_send_message(&mut self, message: RtmpMessage) {
+    ///
+    /// # エラー
+    ///
+    /// [`RtmpMessageEncoder::encode`] が入力を拒否した場合は、そのエラーを返す。
+    /// 送信バッファと後続のメッセージのチャンクエンコード状態は変わらない。
+    pub fn feed_send_message(&mut self, message: RtmpMessage) -> Result<(), Error> {
         let chunk_stream_id = RtmpChunkStreamId::from_message_stream_id(message.header().stream_id);
         self.encoder
-            .encode(self.send_buf.inner_mut(), chunk_stream_id, message);
+            .encode(self.send_buf.inner_mut(), chunk_stream_id, message)
     }
 
     /// 自身の ACK ウィンドウサイズを設定する
@@ -472,7 +477,9 @@ mod tests {
         channel.notify_ack_received(10_003_073);
         assert_eq!(channel.acked_without_handshake.confirmed, 5_003_073);
         assert_eq!(channel.acked_with_handshake.confirmed, 10_000_000);
-        channel.feed_send_message(RtmpMessage::ack(0));
+        channel
+            .feed_send_message(RtmpMessage::ack(0))
+            .expect("ACK のエンコードは失敗しないはず");
         assert!(channel.advance_send_buf(1), "正常な ACK で切断しない");
 
         // 送信が進んでチャンク起点の範囲に入っても、直前と同じ ACK では更新しない。
@@ -548,7 +555,9 @@ mod tests {
             let mut channel = RtmpMessageChannel::default();
             channel.set_local_ack_window_size(1);
             channel.set_handshake_bytes_sent(offset);
-            channel.feed_send_message(RtmpMessage::ack(0));
+            channel
+                .feed_send_message(RtmpMessage::ack(0))
+                .expect("ACK のエンコードは失敗しないはず");
             let queued = channel.send_buf().len() as u32;
             assert!(queued > 11, "閾値の検証に必要な送信データがあるはず");
 
@@ -585,7 +594,9 @@ mod tests {
             let mut channel = RtmpMessageChannel::default();
             channel.set_local_ack_window_size(3);
             channel.set_handshake_bytes_sent(offset);
-            channel.feed_send_message(RtmpMessage::ack(0));
+            channel
+                .feed_send_message(RtmpMessage::ack(0))
+                .expect("ACK のエンコードは失敗しないはず");
             assert!(channel.advance_send_buf(6));
 
             // 未送信の位置を指す ACK は保留だけとし、後続の有効な位置を拒否する基準にしない。
@@ -651,7 +662,9 @@ mod tests {
 
         // 大きなウィンドウでも閾値の計算があふれず、閾値より 1 バイト超えたときだけ失敗する。
         channel.total_bytes_sent = u64::from(u32::MAX) * 2 - 1;
-        channel.feed_send_message(RtmpMessage::ack(0));
+        channel
+            .feed_send_message(RtmpMessage::ack(0))
+            .expect("ACK のエンコードは失敗しないはず");
         assert!(channel.advance_send_buf(1), "閾値と同じ送信量は許容する");
         assert!(!channel.advance_send_buf(1), "閾値を超えた送信量は検出する");
     }
@@ -700,7 +713,9 @@ mod tests {
 
         let mut channel = RtmpMessageChannel::default();
         for message in &messages {
-            channel.feed_send_message(message.clone());
+            channel
+                .feed_send_message(message.clone())
+                .expect("有効なメッセージのエンコードは失敗しないはず");
         }
 
         let buf = channel.send_buf().to_vec();

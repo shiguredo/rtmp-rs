@@ -78,11 +78,15 @@ impl RtmpPublishClientConnection {
             frame,
         };
 
-        self.inner.message_channel.feed_send_message(message);
-        Ok(())
+        self.inner.message_channel.feed_send_message(message)
     }
 
     /// 映像フレームを送信する（送信バッファに追加する）
+    ///
+    /// # エラー
+    ///
+    /// 配信中でないか、映像フレームが [`crate::flv::encode_video_frame`] の入力条件を
+    /// 満たさない場合は、送信バッファを変更せずにエラーを返す。
     pub fn send_video(&mut self, frame: VideoFrame) -> Result<(), Error> {
         self.inner.state.expect(RtmpConnectionState::Publishing)?;
 
@@ -94,8 +98,7 @@ impl RtmpPublishClientConnection {
             frame,
         };
 
-        self.inner.message_channel.feed_send_message(message);
-        Ok(())
+        self.inner.message_channel.feed_send_message(message)
     }
 
     /// 次のイベントを取得する
@@ -117,7 +120,7 @@ impl RtmpPublishClientConnection {
             timestamp: RtmpTimestamp::ZERO,
         })?;
 
-        self.inner.message_channel.feed_send_message(message);
+        self.inner.message_channel.feed_send_message(message)?;
         self.inner.next_transaction_id.increment();
 
         Ok(())
@@ -191,7 +194,7 @@ impl RtmpPlayClientConnection {
             timestamp: RtmpTimestamp::ZERO,
         })?;
 
-        self.inner.message_channel.feed_send_message(message);
+        self.inner.message_channel.feed_send_message(message)?;
         self.inner.next_transaction_id.increment();
 
         Ok(())
@@ -241,7 +244,7 @@ impl RtmpClientConnection {
     fn connect(&mut self) -> Result<(), Error> {
         // こちらから送信するデータに対する（相手からの） ACK の間隔を指定する
         let message = RtmpMessage::win_ack_size(self.options.ack_window_size);
-        self.message_channel.feed_send_message(message);
+        self.message_channel.feed_send_message(message)?;
         self.message_channel
             .set_local_ack_window_size(self.options.ack_window_size);
 
@@ -249,11 +252,11 @@ impl RtmpClientConnection {
         //
         // [補足] これへの返信として、相手からの win ack size を受信したタイミングで、こちらからの ACK の間隔が確定する
         let message = RtmpMessage::set_peer_bandwidth(self.options.ack_window_size);
-        self.message_channel.feed_send_message(message);
+        self.message_channel.feed_send_message(message)?;
 
         // SetChunkSize を送信する
         self.message_channel
-            .feed_send_message(RtmpMessage::set_chunk_size(self.options.chunk_size));
+            .feed_send_message(RtmpMessage::set_chunk_size(self.options.chunk_size))?;
 
         // Connect コマンドを送信する
         let tc_url = format!(
@@ -270,9 +273,7 @@ impl RtmpClientConnection {
             tc_url,
         });
         let message = command.into_pcm_message()?;
-        self.message_channel.feed_send_message(message);
-
-        Ok(())
+        self.message_channel.feed_send_message(message)
     }
 
     fn feed_recv_buf(&mut self, buf: &[u8]) -> Result<(), Error> {
@@ -287,7 +288,7 @@ impl RtmpClientConnection {
             if let Some(total_bytes_received) = self.message_channel.feed_recv_buf(buf)? {
                 // ACK メッセージを送信
                 let ack_message = RtmpMessage::ack(total_bytes_received);
-                self.message_channel.feed_send_message(ack_message);
+                self.message_channel.feed_send_message(ack_message)?;
             }
             while let Some(message) = self.message_channel.next_recv_message() {
                 self.handle_recv_message(message)?;
@@ -336,7 +337,7 @@ impl RtmpClientConnection {
             RtmpMessage::SetPeerBandwidth { size, .. } => {
                 // 相手に win ack size を返送する（いったん limit_type は考慮しない）
                 let message = RtmpMessage::win_ack_size(self.options.ack_window_size);
-                self.message_channel.feed_send_message(message);
+                self.message_channel.feed_send_message(message)?;
                 self.message_channel.set_local_ack_window_size(size);
                 Ok(())
             }
@@ -348,8 +349,7 @@ impl RtmpClientConnection {
                     header: RtmpMessageHeader::PCM,
                     event: RtmpUserControlEvent::PingResponse { timestamp },
                 };
-                self.message_channel.feed_send_message(response);
-                Ok(())
+                self.message_channel.feed_send_message(response)
             }
             RtmpMessage::UserControl { event, .. } => {
                 self.event_queue
@@ -504,7 +504,7 @@ impl RtmpClientConnection {
         });
 
         let message = command.into_pcm_message()?;
-        self.message_channel.feed_send_message(message);
+        self.message_channel.feed_send_message(message)?;
         self.next_transaction_id.increment();
 
         Ok(())

@@ -1,10 +1,11 @@
 //! RTMP Connection (Message Channel) の Property-Based Testing
 
 use noprop::TestCaseContext;
+use shiguredo_rtmp::error::ErrorKind;
 use shiguredo_rtmp::media::{
     AudioFormat, AudioFrame, AudioSampleRate, AvcPacketType, VideoCodec, VideoFrame, VideoFrameType,
 };
-use shiguredo_rtmp::rtmp_chunk::RtmpChunkSize;
+use shiguredo_rtmp::rtmp_chunk::{MessageHeaderFormat, RtmpChunkSize};
 use shiguredo_rtmp::rtmp_connection::RtmpMessageChannel;
 use shiguredo_rtmp::rtmp_message::{RtmpMessage, RtmpMessageHeader, RtmpMessageStreamId};
 use shiguredo_rtmp::rtmp_message_decoder::RtmpMessageDecoder;
@@ -173,7 +174,9 @@ fn message_channel_send_roundtrip() -> noprop::TestResult {
 
         let mut channel = RtmpMessageChannel::default();
         for message in &messages {
-            channel.feed_send_message(message.clone());
+            channel
+                .feed_send_message(message.clone())
+                .expect("生成した RTMP メッセージを送信バッファに追加できるはず");
         }
 
         let buf = channel.send_buf().to_vec();
@@ -197,6 +200,95 @@ fn message_channel_send_roundtrip() -> noprop::TestResult {
     Ok(())
 }
 
+/// 不正な映像メッセージは送信待ちのバイト列と後続のチャンクヘッダー圧縮に影響しない
+#[test]
+fn message_channel_rejects_invalid_video_without_changing_output() -> noprop::TestResult {
+    let seed = noprop::seed_from_env_or_time(SEED_ENV)?;
+    noprop::Runner::new(seed).run(CASES, |ctx: &mut TestCaseContext| {
+        let stream_id = RtmpMessageStreamId::new(noprop::sample_u32_in(ctx, 1..=500));
+        let step_ms = noprop::sample_u32_in(ctx, 1..=10_000);
+        let chunk_size = RtmpChunkSize::new(noprop::sample_usize_in(ctx, 3..=16))
+            .expect("既定値より小さい有効なチャンクサイズを生成する");
+        let mut frame = sample_video_frame(ctx);
+        // 既定値では分割されず、設定したサイズでは必ず分割される映像メッセージを使う。
+        frame.data.resize(frame.data.len().max(chunk_size.get()), 0);
+        let video_at = |timestamp_ms, frame| {
+            let timestamp = RtmpTimestamp::from_millis(timestamp_ms);
+            RtmpMessage::Video {
+                header: RtmpMessageHeader {
+                    stream_id,
+                    timestamp,
+                },
+                frame: VideoFrame { timestamp, ..frame },
+            }
+        };
+        let first = video_at(3 * step_ms, frame.clone());
+        let next = video_at(6 * step_ms, frame.clone());
+
+        let setup = || {
+            let mut channel = RtmpMessageChannel::default();
+            channel
+                .feed_send_message(RtmpMessage::set_chunk_size(chunk_size))
+                .expect("チャンクサイズの変更を追加できるはず");
+            channel
+                .feed_send_message(first.clone())
+                .expect("先行する有効な映像メッセージを追加できるはず");
+            channel
+        };
+        let mut control = setup();
+        let pending_len = control.send_buf().len();
+        control
+            .feed_send_message(next.clone())
+            .expect("後続の有効な映像メッセージを追加できるはず");
+        // RTMP 仕様 5.3.1.2 節の形式 3 を使うように、型・長さと時刻差分をそろえる。
+        // 圧縮ヘッダーの条件が変わった場合は、履歴が反映される比較方法を見直す。
+        assert_eq!(
+            control.send_buf()[pending_len] >> 6,
+            MessageHeaderFormat::F3 as u8,
+            "後続メッセージは形式 3 の圧縮ヘッダーを使うはず"
+        );
+
+        // 両方の不正な組み合わせを、同じ先行履歴から個別に検証する。
+        for (codec, avc_packet_type) in [
+            (VideoCodec::Avc, None),
+            (VideoCodec::Jpeg, Some(AvcPacketType::NalUnit)),
+        ] {
+            let mut channel = setup();
+            let pending = channel.send_buf().to_vec();
+            // 不正な時刻が履歴に残ると、次の有効メッセージの時刻差分が変わる。
+            let invalid = video_at(
+                4 * step_ms,
+                VideoFrame {
+                    codec,
+                    avc_packet_type,
+                    composition_timestamp_offset: RtmpTimestampDelta::ZERO,
+                    ..frame.clone()
+                },
+            );
+            let error = channel.feed_send_message(invalid).expect_err(
+                "コーデックと AVC パケットタイプの組み合わせが不正な映像は拒否するはず",
+            );
+            assert_eq!(error.kind, ErrorKind::InvalidInput, "入力エラーを返すはず");
+            assert_eq!(
+                channel.send_buf(),
+                pending,
+                "失敗しても送信待ちのバイト列は変わらないはず"
+            );
+
+            channel
+                .feed_send_message(next.clone())
+                .expect("失敗後も有効な映像メッセージを追加できるはず");
+            assert_eq!(
+                channel.send_buf(),
+                control.send_buf(),
+                "失敗しなかった対照とチャンク分割・圧縮ヘッダーを含む送信バイト列が一致するはず"
+            );
+        }
+        Ok(())
+    })?;
+    Ok(())
+}
+
 /// 受信バイト数と peer_ack_window_size に基づく ACK 送信判定を検証する
 #[test]
 fn message_channel_recv_ack_threshold() -> noprop::TestResult {
@@ -208,7 +300,9 @@ fn message_channel_recv_ack_threshold() -> noprop::TestResult {
 
         let mut sender = RtmpMessageChannel::default();
         for message in &messages {
-            sender.feed_send_message(message.clone());
+            sender
+                .feed_send_message(message.clone())
+                .expect("生成した RTMP メッセージを送信バッファに追加できるはず");
         }
         let buf = sender.send_buf().to_vec();
 
@@ -269,7 +363,9 @@ fn message_channel_send_ack_timeout() -> noprop::TestResult {
         channel.set_local_ack_window_size(local_ack_window_size);
 
         for message in &messages {
-            channel.feed_send_message(message.clone());
+            channel
+                .feed_send_message(message.clone())
+                .expect("生成した RTMP メッセージを送信バッファに追加できるはず");
         }
 
         let total_buf_len = channel.send_buf().len() as u32;
@@ -306,7 +402,9 @@ fn message_channel_send_with_ack() -> noprop::TestResult {
         channel.set_local_ack_window_size(local_ack_window_size);
 
         for message in &messages {
-            channel.feed_send_message(message.clone());
+            channel
+                .feed_send_message(message.clone())
+                .expect("生成した RTMP メッセージを送信バッファに追加できるはず");
         }
 
         let total_buf_len = channel.send_buf().len();

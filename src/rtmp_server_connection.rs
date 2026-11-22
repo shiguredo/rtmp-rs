@@ -76,7 +76,7 @@ impl RtmpServerConnection {
         if let Some(total_bytes_received) = feed_result {
             // ACK メッセージを送信
             let ack_message = RtmpMessage::ack(total_bytes_received);
-            self.message_channel.feed_send_message(ack_message);
+            self.message_channel.feed_send_message(ack_message)?;
         }
         while let Some(message) = self.message_channel.next_recv_message() {
             self.handle_recv_message(message)?;
@@ -123,7 +123,7 @@ impl RtmpServerConnection {
             RtmpMessage::SetPeerBandwidth { size, .. } => {
                 // 相手に win ack size を返送する（いったん limit_type は考慮しない）
                 let message = RtmpMessage::win_ack_size(self.options.ack_window_size);
-                self.message_channel.feed_send_message(message);
+                self.message_channel.feed_send_message(message)?;
                 self.message_channel.set_local_ack_window_size(size);
             }
             RtmpMessage::UserControl {
@@ -140,7 +140,7 @@ impl RtmpServerConnection {
                     header: RtmpMessageHeader::PCM,
                     event: RtmpUserControlEvent::PingResponse { timestamp },
                 };
-                self.message_channel.feed_send_message(response);
+                self.message_channel.feed_send_message(response)?;
             }
             RtmpMessage::UserControl { event, .. } => {
                 self.event_queue
@@ -183,9 +183,7 @@ impl RtmpServerConnection {
             0.0,
         ))
         .into_message(RtmpMessageHeader::PCM)?;
-        self.message_channel.feed_send_message(message);
-
-        Ok(())
+        self.message_channel.feed_send_message(message)
     }
 
     fn handle_publish_command(
@@ -243,10 +241,10 @@ impl RtmpServerConnection {
             RtmpMessageStreamId::MEDIA,
         ))
         .into_message(RtmpMessageHeader::PCM)?;
-        self.message_channel.feed_send_message(message);
+        self.message_channel.feed_send_message(message)?;
 
         self.message_channel
-            .feed_send_message(RtmpMessage::stream_begin(RtmpMessageStreamId::MEDIA));
+            .feed_send_message(RtmpMessage::stream_begin(RtmpMessageStreamId::MEDIA))?;
 
         self.change_state(RtmpConnectionState::MediaStreamCreated);
         Ok(())
@@ -255,13 +253,13 @@ impl RtmpServerConnection {
     fn handle_connect_command(&mut self, command: RtmpConnectCommand) -> Result<(), Error> {
         // こちらから送信するデータに対する（相手からの） ACK の間隔を指定する
         self.message_channel
-            .feed_send_message(RtmpMessage::win_ack_size(self.options.ack_window_size));
+            .feed_send_message(RtmpMessage::win_ack_size(self.options.ack_window_size))?;
         self.message_channel
             .set_local_ack_window_size(self.options.ack_window_size);
 
         // SetChunkSize を送信する
         self.message_channel
-            .feed_send_message(RtmpMessage::set_chunk_size(self.options.chunk_size));
+            .feed_send_message(RtmpMessage::set_chunk_size(self.options.chunk_size))?;
 
         // 相手から送信してくるデータに対する（こちらからの） ACK の間隔の要望（ヒント）を指定する
         //
@@ -269,14 +267,14 @@ impl RtmpServerConnection {
         self.message_channel
             .feed_send_message(RtmpMessage::set_peer_bandwidth(
                 self.options.ack_window_size,
-            ));
+            ))?;
 
         // RTMP の仕様に合わせて、最初のストリームを開始する（用途は不明）
         self.message_channel
-            .feed_send_message(RtmpMessage::stream_begin(RtmpMessageStreamId::FIRST));
+            .feed_send_message(RtmpMessage::stream_begin(RtmpMessageStreamId::FIRST))?;
 
         // Connect は常に受理する（必要なら Publish / Play コマンドのタイミングで拒否する）
-        self.message_channel.feed_send_message(command.accept()?);
+        self.message_channel.feed_send_message(command.accept()?)?;
         self.change_state(RtmpConnectionState::Connected);
         self.connect_command = Some(command);
 
@@ -358,7 +356,7 @@ impl RtmpServerConnection {
             .feed_send_message(RtmpPublishCommand::accept(
                 transaction_id,
                 RtmpMessageStreamId::MEDIA,
-            )?);
+            )?)?;
 
         let message = RtmpCommand::OnStatus(RtmpOnStatusCommand::publish_start()).into_message(
             RtmpMessageHeader {
@@ -366,7 +364,7 @@ impl RtmpServerConnection {
                 timestamp: RtmpTimestamp::ZERO,
             },
         )?;
-        self.message_channel.feed_send_message(message);
+        self.message_channel.feed_send_message(message)?;
 
         self.change_state(RtmpConnectionState::Publishing);
         Ok(())
@@ -382,7 +380,7 @@ impl RtmpServerConnection {
             .feed_send_message(RtmpPlayCommand::accept(
                 transaction_id,
                 RtmpMessageStreamId::MEDIA,
-            )?);
+            )?)?;
 
         let message = RtmpCommand::OnStatus(RtmpOnStatusCommand::play_start()).into_message(
             RtmpMessageHeader {
@@ -390,7 +388,7 @@ impl RtmpServerConnection {
                 timestamp: RtmpTimestamp::ZERO,
             },
         )?;
-        self.message_channel.feed_send_message(message);
+        self.message_channel.feed_send_message(message)?;
 
         self.change_state(RtmpConnectionState::Playing);
         Ok(())
@@ -429,7 +427,7 @@ impl RtmpServerConnection {
             )?
         };
 
-        self.message_channel.feed_send_message(message);
+        self.message_channel.feed_send_message(message)?;
 
         self.change_state(RtmpConnectionState::Disconnecting);
         Ok(())
@@ -449,13 +447,16 @@ impl RtmpServerConnection {
             frame,
         };
 
-        self.message_channel.feed_send_message(message);
-        Ok(())
+        self.message_channel.feed_send_message(message)
     }
 
     /// 映像フレームをクライアントに送信する（送信バッファに追加する）
     ///
-    /// [`RtmpConnectionState::Playing`] 状態の時のみ呼び出し可能
+    /// # エラー
+    ///
+    /// [`RtmpConnectionState::Playing`] 状態でないか、映像フレームが
+    /// [`crate::flv::encode_video_frame`] の入力条件を満たさない場合は、
+    /// 送信バッファを変更せずにエラーを返す。
     pub fn send_video(&mut self, frame: VideoFrame) -> Result<(), Error> {
         self.state.expect(RtmpConnectionState::Playing)?;
 
@@ -467,8 +468,7 @@ impl RtmpServerConnection {
             frame,
         };
 
-        self.message_channel.feed_send_message(message);
-        Ok(())
+        self.message_channel.feed_send_message(message)
     }
 
     /// 次のイベントを取得する

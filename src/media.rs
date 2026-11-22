@@ -60,7 +60,10 @@ pub struct VideoFrame {
     /// このフレームのタイムスタンプ（ミリ秒単位）
     pub timestamp: RtmpTimestamp,
 
-    /// H.264/AVC の合成時間オフセット（デコード時刻と表示時刻の差分）
+    /// AVC 追加ヘッダーの合成時間オフセット（CompositionTime）
+    ///
+    /// 通常の AVC 映像ではデコード時刻と表示時刻の差分を表す。
+    /// コマンドフレームでもヘッダーの値は保持するが、コマンドの表示時刻を表す値ではない。
     pub composition_timestamp_offset: RtmpTimestampDelta,
 
     /// このフレームのタイプ（キーフレーム、インターフレーム など）
@@ -69,10 +72,13 @@ pub struct VideoFrame {
     /// 使用されている映像コーデック（H.264、VP6 など）
     pub codec: VideoCodec,
 
-    /// AVC パケットタイプ（H.264 の場合にペイロードデータが何を含むかを示す）
+    /// AVC の追加ヘッダーのパケットタイプ
+    ///
+    /// FLV の映像タグにエンコードする場合は、コマンドフレームを含め、
+    /// `codec` が [`VideoCodec::Avc`] なら `Some`、それ以外なら `None` にする。
     pub avc_packet_type: Option<AvcPacketType>,
 
-    /// エンコードされた映像データペイロード
+    /// 映像データペイロード。コマンドフレームではヘッダーに続くコマンドを含む。
     pub data: Vec<u8>,
 }
 
@@ -83,15 +89,16 @@ impl VideoFrame {
     }
 }
 
-/// AVC（H.264）パケットのタイプ
+/// FLV の AVC 追加ヘッダーに記録するパケットタイプ
 ///
-/// AVC 映像パケット内に含まれるデータの種類を示す
+/// 通常の AVC 映像フレームではボディの種類を示す。
+/// [`VideoFrameType::VideoInfoOrCommandFrame`] の場合、ボディはコマンドであり、この値では決まらない。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum AvcPacketType {
-    /// デコーダー設定データを含む AVC シーケンスヘッダー
+    /// AVC シーケンスヘッダー（通常の映像フレームのボディはデコーダー設定データ）
     SequenceHeader = 0,
 
-    /// 映像データを含む 1 つ以上の NAL ユニット
+    /// AVC NALU（通常の映像フレームのボディは 1 つ以上の NAL ユニット）
     NalUnit = 1,
 
     /// AVC シーケンス終了マーカー
@@ -266,8 +273,9 @@ impl AvcSequenceHeader {
 
     /// バイト列をパースして [`AvcSequenceHeader`] インスタンスを生成する
     ///
-    /// 通常はこのバイト列は [`VideoFrame::avc_packet_type`] が [`AvcPacketType::SequenceHeader`] の場合に
-    /// [`VideoFrame::data`] に格納されている値となる
+    /// コマンドではない AVC 映像フレームで [`VideoFrame::avc_packet_type`] が
+    /// [`AvcPacketType::SequenceHeader`] の場合は、[`VideoFrame::data`] を渡す。
+    /// コマンドフレームのボディはデコーダー設定データではない。
     ///
     /// # エラー
     ///

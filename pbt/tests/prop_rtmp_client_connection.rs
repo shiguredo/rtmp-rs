@@ -5,8 +5,9 @@ use std::str::FromStr;
 use noprop::TestCaseContext;
 use shiguredo_rtmp::amf::{AmfValue, AmfVersion, Pair};
 use shiguredo_rtmp::amf0::Amf0Value;
+use shiguredo_rtmp::error::ErrorKind;
 use shiguredo_rtmp::media::{
-    AudioFormat, AudioFrame, AudioSampleRate, VideoCodec, VideoFrame, VideoFrameType,
+    AudioFormat, AudioFrame, AudioSampleRate, AvcPacketType, VideoCodec, VideoFrame, VideoFrameType,
 };
 use shiguredo_rtmp::rtmp_chunk::{RtmpChunkSize, RtmpChunkStreamId};
 use shiguredo_rtmp::rtmp_client_connection::{
@@ -121,11 +122,13 @@ fn sample_video_frame(ctx: &mut TestCaseContext) -> VideoFrame {
 fn encode_message(message: RtmpMessage) -> Vec<u8> {
     let mut encoder = RtmpMessageEncoder::default();
     let mut buf = Vec::new();
-    encoder.encode(
-        &mut buf,
-        RtmpChunkStreamId::new(3).expect("チャンクストリーム ID 3 は常に有効"),
-        message,
-    );
+    encoder
+        .encode(
+            &mut buf,
+            RtmpChunkStreamId::new(3).expect("チャンクストリーム ID 3 は常に有効"),
+            message,
+        )
+        .expect("生成した RTMP メッセージはエンコードできるはず");
     buf
 }
 
@@ -545,7 +548,7 @@ fn control_message_flow() -> noprop::TestResult {
     Ok(())
 }
 
-/// Publishing 状態でオーディオ・ビデオを送信できることを検証する
+/// Publishing 状態で有効なメディアは送信でき、不正な映像はバッファを変更せずに拒否する
 #[test]
 fn publish_send_media() -> noprop::TestResult {
     let seed = noprop::seed_from_env_or_time(SEED_ENV)?;
@@ -575,18 +578,32 @@ fn publish_send_media() -> noprop::TestResult {
                 .expect("AudioFrame の送信に失敗した");
         }
 
-        // ビデオフレームを送信
         for frame in video_frames {
+            // JPEG フレームに AVC パケットタイプだけを加えて、配信中の入力エラーを検証する。
+            let pending = client.send_buf().to_vec();
+            let invalid = VideoFrame {
+                avc_packet_type: Some(AvcPacketType::NalUnit),
+                ..frame.clone()
+            };
+            let error = client
+                .send_video(invalid)
+                .expect_err("配信中でも不正な映像フレームは拒否するはず");
+            assert_eq!(error.kind, ErrorKind::InvalidInput, "入力エラーを返すはず");
+            assert_eq!(
+                client.send_buf(),
+                pending,
+                "不正な映像は送信待ちのバイト列を変更しないはず"
+            );
+
+            // 同じフレームを正しい組み合わせで送信すれば、送信バッファに追加される。
             client
                 .send_video(frame)
-                .expect("VideoFrame の送信に失敗した");
+                .expect("有効な映像フレームは失敗後も送信できるはず");
+            assert!(
+                client.send_buf().len() > pending.len(),
+                "有効な映像が送信バッファに追加されるはず"
+            );
         }
-
-        // 送信バッファにデータがあることを確認
-        assert!(
-            !client.send_buf().is_empty(),
-            "メディア送信後の送信バッファが空になっている"
-        );
         Ok(())
     })?;
     Ok(())

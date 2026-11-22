@@ -3,6 +3,7 @@
 use noprop::TestCaseContext;
 use shiguredo_rtmp::amf::{AmfValue, AmfVersion};
 use shiguredo_rtmp::amf0::Amf0Value;
+use shiguredo_rtmp::error::ErrorKind;
 use shiguredo_rtmp::media::{
     AudioFormat, AudioFrame, AudioSampleRate, AvcPacketType, VideoCodec, VideoFrame, VideoFrameType,
 };
@@ -173,7 +174,9 @@ fn encode_message(message: RtmpMessage) -> Vec<u8> {
     let mut encoder = RtmpMessageEncoder::default();
     let mut buf = Vec::new();
     let chunk_stream_id = RtmpChunkStreamId::new(3).expect("3 は有効なチャンクストリーム ID");
-    encoder.encode(&mut buf, chunk_stream_id, message);
+    encoder
+        .encode(&mut buf, chunk_stream_id, message)
+        .expect("生成した RTMP メッセージはエンコードできるはず");
     buf
 }
 
@@ -597,7 +600,7 @@ fn accept_play_flow() -> noprop::TestResult {
     Ok(())
 }
 
-/// Playing 状態でメディア送信が可能であることを検証する
+/// Playing 状態で有効なメディアは送信でき、不正な映像はバッファを変更せずに拒否する
 #[test]
 fn send_media_in_playing() -> noprop::TestResult {
     let seed = noprop::seed_from_env_or_time(SEED_ENV)?;
@@ -632,10 +635,33 @@ fn send_media_in_playing() -> noprop::TestResult {
         drain_events(&mut server);
 
         server.send_audio(audio).expect("send_audio に成功するはず");
-        server.send_video(video).expect("send_video に成功するはず");
+
+        // コーデックに必要な AVC パケットタイプの有無だけを逆にする。
+        let pending = server.send_buf().to_vec();
+        let invalid = VideoFrame {
+            avc_packet_type: if video.codec == VideoCodec::Avc {
+                None
+            } else {
+                Some(AvcPacketType::NalUnit)
+            },
+            ..video.clone()
+        };
+        let error = server
+            .send_video(invalid)
+            .expect_err("再生中でも不正な映像フレームは拒否するはず");
+        assert_eq!(error.kind, ErrorKind::InvalidInput, "入力エラーを返すはず");
+        assert_eq!(
+            server.send_buf(),
+            pending,
+            "不正な映像は送信待ちのバイト列を変更しないはず"
+        );
+
+        server
+            .send_video(video)
+            .expect("有効な映像フレームは失敗後も送信できるはず");
         assert!(
-            !server.send_buf().is_empty(),
-            "送信した音声・映像が送信バッファに積まれていない"
+            server.send_buf().len() > pending.len(),
+            "有効な映像が送信バッファに追加されるはず"
         );
         Ok(())
     })?;
