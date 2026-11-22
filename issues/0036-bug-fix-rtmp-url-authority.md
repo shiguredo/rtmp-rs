@@ -3,46 +3,41 @@
 - Created: 2026-11-22
 - Completed: {YYYY-MM-DD}
 - Branch: feature/fix-rtmp-url-authority
-- Polished: {YYYY-MM-DD}
+- Polished: 2026-11-22
 
 ## 目的
 
-`RtmpUrl::parse` が authority を RFC 3986 に沿って解釈し、IPv6 アドレスやユーザー情報を含む URL で接続先を誤らないようにする。
+`RtmpUrl` の authority 解析で、ブラケットなしの IPv6 を別の `host` と `port` に誤分割せず、空のブラケットや未対応のユーザー情報も誤って受理しないようにする。
 
 ## 現状
 
 - `src/rtmp_url.rs` の `parse_host_port` は、ブラケットで囲まれていない authority について「最後の `:` の後ろが数字だけならポート番号」と解釈する。
 - そのため `rtmp://2001:db8::1/live/stream` は host = `2001:db8:`、port = 1 になる。IPv6 アドレスは RFC 3986 ではブラケットで囲む必要がある。
 - `rtmp://[]/live/stream` のような空のブラケットも受理される。
-- `rtmp://user@example.com/live/stream` は host に `@` を含んだまま受理され、`rtmp://user:pass@example.com/live/stream` はポート番号の解析でエラーになる。ユーザー情報の扱いが一貫していない。
+- `rtmp://user@example.com/live/stream` は `host` に `@` を含んだまま受理される。一方、`rtmp://user:dummy@example.com/live/stream` は `:` の後ろが数字ではないため、ポートへの変換前に拒否される。ユーザー情報としては認識されない。
+- ブラケット内の文字列が IPv6 アドレスかどうかは検証しない。既存の `test_invalid_ipv6_address` はこの挙動を固定している。
 
 ### 再現条件
 
-1. `RtmpUrl::parse("rtmp://2001:db8::1/live/stream")` を呼ぶ。
-2. `host` と `port` を確認する。
-
-期待は、ブラケットなしの IPv6 を拒否するか、host = `2001:db8::1` として扱うこと。実際は host = `2001:db8:`、port = 1 になる。
-
-`RtmpUrl::parse("rtmp://user@example.com/live/stream")` では host に `user@example.com` が入る。
+`RtmpUrl::parse("rtmp://2001:db8::1/live/stream")` は `ErrorKind::InvalidInput` を返すべきだが、現行実装では `host = "2001:db8:"`、`port = 1` で成功する。
 
 ## 設計方針
 
-- authority を RFC 3986 の `[userinfo "@"] host [":" port]` として解析する。
-- IPv6 アドレスはブラケット必須とし、ブラケットなしの IPv6 は `ErrorKind::InvalidInput` にする。ブラケット付きの場合は host にブラケットを含めるか外すかを現行仕様から決め、`Display` と往復できるようにする。
-- ユーザー情報は、URL に保持するのか拒否するのかを決める。保持しない場合は `@` を含む authority を一貫して拒否する。
-- ポート番号の u16 変換失敗は従来どおり `ErrorKind::InvalidInput` とする。
-- 既存の `rtmp://host:1935/app/stream` と `rtmp://[::1]:1935/app/stream` の挙動は維持する。
+- [RFC 3986 §3.2–3.2.2](https://www.rfc-editor.org/rfc/rfc3986.html#section-3.2) の authority 構文 `[userinfo "@"] host [":" port]` と IPv6 リテラルのブラケット規則を境界判定の根拠とする。変更対象は `RtmpUrl::parse` と `RtmpUrl::parse_with_stream_name` が使う `parse_host_port`。`FromStr` は従来どおり `parse` に委譲する。URL 全体から authority を切り出す境界は 0035 が扱う。
+- ユーザー情報はサポートしない。authority に生の `@` が含まれていたら `ErrorKind::InvalidInput` を返し、値を保存せず、エラーメッセージにも含めない。パーセントデコードは行わない。
+- ブラケットなしの authority では `:` をポートの区切りにだけ使い、複数の `:` やブラケット文字を含む場合は拒否する。ブラケット付きの形式では、先頭の `[` と対応する `]` の間は空でなく、他のブラケットを含まないことを確認する。`]` の後ろは何もないか `:port` の形式だけを許可する。これらを満たさない場合は `ErrorKind::InvalidInput` とする。ブラケット内のアドレス自体の妥当性やホスト名の書式を検証する変更は行わない。
+- 空のホストは従来どおり拒否する。明示ポートの受理範囲は変更せず、ブラケットなしでは ASCII 数字だけかを確認してから、ブラケット付きではポート部分をそのまま `u16` に変換する。変換失敗は `ErrorKind::InvalidInput` とする。[RFC 3986 §3.2.3](https://www.rfc-editor.org/rfc/rfc3986.html#section-3.2.3) の `port = *DIGIT` は空のポートも表せるが、空の明示ポートは従来どおり拒否する。ポート自体を省略した場合は `rtmp` が 1935、`rtmps` が 443 のままとする。
+- ブラケット付きホストの `RtmpUrl::host` はブラケットを含む元の表記を保持する。公開フィールド、`Display`、`tcUrl` の生成は変更しない。変更は URL の解析に限定し、ソケット接続や TLS のサーバー名への変換は対象外とする。
 
 ## 完了条件
 
-- ブラケットなし IPv6、空のブラケット、ユーザー情報付き URL の扱いが一貫し、テストで固定される。
-- ブラケット付き IPv6 の host と port が正しく解析され、`Display` と往復する。
-- 既存の IPv4 / ホスト名 / ポート省略の解析に回帰がない。
-- 上記を確認する単体テストを追加する。
+- ブラケットなし IPv6、`[]`、閉じブラケットの欠落、ブラケット後の不正文字、利用者名だけまたはパスワード付きのユーザー情報を含む authority は、両解析 API で `ErrorKind::InvalidInput` になる。
+- `rtmp://host:1935/app/stream` と `rtmp://[::1]:1935/app/stream` ではそれぞれ従来どおり `host = "host"` または `host = "[::1]"`、`port = 1935` を得る。query も fragment もないブラケット付き IPv6 の URL を `parse` した値は、`Display` の出力を再度 `parse` して同じ値になる。ポートを省略した元の文字列と出力の一致は要求しない。
+- 既存の IPv4、ホスト名、既定ポートおよび `test_invalid_ipv6_address` の挙動を維持する。今回追加する拒否条件は公開 API の PBT で回帰を検証し、単体テストの追加は PBT で実現できないケースだけに限る。
+- 本 issue が追加するブラケット構造とユーザー情報の拒否の回帰は 0045 で重ねて追加しない。既存テストにない明示ポートの境界や一般的な往復検証は 0045 で扱う。
 
 ## 解決方法
 
-1. `src/rtmp_url.rs` に authority の解析処理を切り出し、userinfo、host、port を分離する。
-2. IPv6 はブラケットの有無を検証し、不正形式を `ErrorKind::InvalidInput` にする。
-3. ユーザー情報の扱いを決めて実装し、`Display` の出力と一致させる。
-4. IPv4、ホスト名、IPv6、userinfo、不正形式のテストを追加する。
+1. `src/rtmp_url.rs` の `parse_host_port` で、ユーザー情報を拒否してからブラケットの構造とホスト・ポートの区切りを検証する。
+2. 分離できたホストとポートを既存の表現と変換規則で返し、公開 API の doc コメントに受理条件を記載する。
+3. 新たな拒否条件の回帰テストを追加し、既存の RTMP URL テストも通ることを確認する。
