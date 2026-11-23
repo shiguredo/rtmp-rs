@@ -692,7 +692,23 @@ fn audio_roundtrip() -> noprop::TestResult {
 fn video_roundtrip() -> noprop::TestResult {
     let seed = noprop::seed_from_env_or_time(SEED_ENV)?;
     noprop::Runner::new(seed).run(CASES, |ctx: &mut TestCaseContext| {
-        roundtrip_test(sample_video_message(ctx));
+        let message = sample_video_message(ctx);
+        roundtrip_test(message.clone());
+
+        // 生成したメッセージでも、AVC のオフセットの両端は毎回往復できることを確認する。
+        let RtmpMessage::Video { header, mut frame } = message else {
+            panic!("映像メッセージを生成するはず");
+        };
+        frame.frame_type = VideoFrameType::InterFrame;
+        frame.codec = VideoCodec::Avc;
+        frame.avc_packet_type = Some(AvcPacketType::NalUnit);
+        for offset in [-8_388_608, 8_388_607] {
+            frame.composition_timestamp_offset = RtmpTimestampDelta::from_millis(offset);
+            roundtrip_test(RtmpMessage::Video {
+                header,
+                frame: frame.clone(),
+            });
+        }
         Ok(())
     })?;
     Ok(())

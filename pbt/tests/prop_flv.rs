@@ -167,42 +167,64 @@ fn audio_frame_roundtrip() -> noprop::TestResult {
 fn video_frame_roundtrip() -> noprop::TestResult {
     let seed = noprop::seed_from_env_or_time(SEED_ENV)?;
     noprop::Runner::new(seed).run(CASES, |ctx: &mut TestCaseContext| {
-        let frame = sample_video_frame(ctx);
-        let mut buf = Vec::new();
-        encode_video_frame(&mut buf, &frame).expect("有効な映像フレームのエンコードは失敗しない");
+        let mut frame = sample_video_frame(ctx);
+        let _ = assert_video_frame_roundtrip(&frame);
 
-        // 往復だけでは両方向の同じ誤りを検出できないので、AVC 追加ヘッダーを別に照合する。
-        let body_start = if let Some(packet_type) = frame.avc_packet_type {
-            let type_byte = match packet_type {
-                AvcPacketType::SequenceHeader => 0,
-                AvcPacketType::NalUnit => 1,
-                AvcPacketType::EndOfSequence => 2,
-            };
-            let [_, high, mid, low] = frame.composition_timestamp_offset.as_millis().to_be_bytes();
+        // 境界値は乱数に任せず、生成したタイムスタンプとデータに対して毎回検証する。
+        frame.frame_type = VideoFrameType::InterFrame;
+        frame.codec = VideoCodec::Avc;
+        frame.avc_packet_type = Some(AvcPacketType::NalUnit);
+        for (offset, expected) in [
+            (-8_388_608, [0x80, 0x00, 0x00]),
+            (8_388_607, [0x7f, 0xff, 0xff]),
+        ] {
+            frame.composition_timestamp_offset = RtmpTimestampDelta::from_millis(offset);
+            let buf = assert_video_frame_roundtrip(&frame);
             assert_eq!(
-                buf.get(1..5),
-                Some([type_byte, high, mid, low].as_slice()),
-                "AVC 追加ヘッダーのワイヤ表現が一致しない"
+                buf.get(2..5),
+                Some(expected.as_slice()),
+                "CompositionTime の境界値 {offset} のワイヤ表現が一致しない"
             );
-            5
-        } else {
-            1
-        };
-        assert_eq!(
-            buf.get(body_start..),
-            Some(frame.data.as_slice()),
-            "コーデックに応じた長さのヘッダーにボディが続くはず"
-        );
-
-        let decoded = decode_video_frame(&buf, frame.timestamp)
-            .expect("エンコードした映像フレームのデコードは失敗しない");
-        assert_eq!(
-            decoded, frame,
-            "ラウンドトリップした映像フレームが一致しない"
-        );
+        }
         Ok(())
     })?;
     Ok(())
+}
+
+fn assert_video_frame_roundtrip(frame: &VideoFrame) -> Vec<u8> {
+    let mut buf = Vec::new();
+    encode_video_frame(&mut buf, frame).expect("有効な映像フレームのエンコードは失敗しない");
+
+    // 往復だけでは両方向の同じ誤りを検出できないので、AVC 追加ヘッダーを別に照合する。
+    let body_start = if let Some(packet_type) = frame.avc_packet_type {
+        let type_byte = match packet_type {
+            AvcPacketType::SequenceHeader => 0,
+            AvcPacketType::NalUnit => 1,
+            AvcPacketType::EndOfSequence => 2,
+        };
+        let [_, high, mid, low] = frame.composition_timestamp_offset.as_millis().to_be_bytes();
+        assert_eq!(
+            buf.get(1..5),
+            Some([type_byte, high, mid, low].as_slice()),
+            "AVC 追加ヘッダーのワイヤ表現が一致しない"
+        );
+        5
+    } else {
+        1
+    };
+    assert_eq!(
+        buf.get(body_start..),
+        Some(frame.data.as_slice()),
+        "コーデックに応じた長さのヘッダーにボディが続くはず"
+    );
+
+    let decoded = decode_video_frame(&buf, frame.timestamp)
+        .expect("エンコードした映像フレームのデコードは失敗しない");
+    assert_eq!(
+        &decoded, frame,
+        "ラウンドトリップした映像フレームが一致しない"
+    );
+    buf
 }
 
 /// コマンドのワイヤ表現は既存バッファやタイムスタンプによらず仕様に従う
@@ -268,6 +290,93 @@ fn video_command_wire_format() -> noprop::TestResult {
             );
         }
 
+        Ok(())
+    })?;
+    Ok(())
+}
+
+/// SI24 の範囲外の差分は、追加ヘッダーを書き出す AVC の場合だけ拒否する
+#[test]
+fn composition_time_range_applies_only_to_avc() -> noprop::TestResult {
+    let seed = noprop::seed_from_env_or_time(SEED_ENV)?;
+    noprop::Runner::new(seed).run(CASES, |ctx: &mut TestCaseContext| {
+        let timestamp = RtmpTimestamp::from_millis(noprop::sample_u32(ctx));
+        let prefix_len = noprop::sample_usize_in(ctx, 1..=32);
+        let prefix = noprop::sample_bytes_vec(ctx, prefix_len);
+        let payload = noprop::sample_bytes_vec(ctx, 8);
+        let non_avc_codec = sample_non_avc_video_codec(ctx);
+
+        for offset in [
+            -8_388_609,
+            8_388_608,
+            0x0100_0000,
+            i32::MIN,
+            i32::MAX,
+            noprop::sample_i32_in(ctx, i32::MIN..=-8_388_609),
+            noprop::sample_i32_in(ctx, 8_388_608..=i32::MAX),
+        ] {
+            let delta = RtmpTimestampDelta::from_millis(offset);
+            // ヘッダーを書く全パケット種別に範囲検査が適用され、コマンドでも省略しない。
+            for (frame_type, packet_type, data) in [
+                (
+                    VideoFrameType::KeyFrame,
+                    AvcPacketType::SequenceHeader,
+                    payload.as_slice(),
+                ),
+                (VideoFrameType::InterFrame, AvcPacketType::NalUnit, &[]),
+                (
+                    VideoFrameType::InterFrame,
+                    AvcPacketType::EndOfSequence,
+                    &[],
+                ),
+                (
+                    VideoFrameType::VideoInfoOrCommandFrame,
+                    AvcPacketType::NalUnit,
+                    &[0x01],
+                ),
+            ] {
+                let frame = VideoFrame {
+                    timestamp,
+                    composition_timestamp_offset: delta,
+                    frame_type,
+                    codec: VideoCodec::Avc,
+                    avc_packet_type: Some(packet_type),
+                    data: data.to_vec(),
+                };
+                let mut buf = prefix.clone();
+                let error = encode_video_frame(&mut buf, &frame)
+                    .expect_err("SI24 で表せない AVC のオフセットを拒否するはず");
+                assert_eq!(
+                    error.kind,
+                    ErrorKind::InvalidInput,
+                    "範囲外のオフセットのエラー種別: {frame_type:?}, {packet_type:?}, {offset}"
+                );
+                assert_eq!(buf, prefix, "不正なオフセットで既存バッファを変えない");
+            }
+
+            // 非 AVC では同じ値を渡しても、ヘッダーに含めないのでエラーにならない。
+            let frame = VideoFrame {
+                timestamp,
+                composition_timestamp_offset: delta,
+                frame_type: VideoFrameType::InterFrame,
+                codec: non_avc_codec,
+                avc_packet_type: None,
+                data: payload.clone(),
+            };
+            let mut buf = Vec::new();
+            encode_video_frame(&mut buf, &frame).expect("非 AVC のオフセットは検査しないはず");
+            assert_eq!(
+                buf.get(1..),
+                Some(payload.as_slice()),
+                "追加ヘッダーを書かない"
+            );
+            let decoded =
+                decode_video_frame(&buf, timestamp).expect("非 AVC のタグは復号できるはず");
+            assert_eq!(
+                decoded.composition_timestamp_offset,
+                RtmpTimestampDelta::ZERO
+            );
+        }
         Ok(())
     })?;
     Ok(())

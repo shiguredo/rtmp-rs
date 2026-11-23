@@ -1,7 +1,7 @@
 # FLV 映像タグの CompositionTime の範囲検証を追加する
 
 - Created: 2026-11-22
-- Completed: {YYYY-MM-DD}
+- Completed: 2026-11-23
 - Branch: feature/fix-flv-composition-time-range
 - Polished: 2026-11-22
 
@@ -35,6 +35,6 @@ legacy FLV の AVC 追加ヘッダーに書く `CompositionTime` が SI24 の表
 
 ## 解決方法
 
-1. `src/flv.rs` の `encode_video_frame` で、AVC 追加ヘッダーを書き出す場合にだけ、書き込み前に SI24 の値域を確認する。
-2. 0037 の `Result` と RTMP 送信経路へのエラー伝播を利用し、公開 API の doc コメントにエラー条件を記載する。
-3. 既存の往復 PBT を更新し、範囲外の拒否を確認する回帰テストを追加する。
+- `encode_video_frame` は、AVC 追加ヘッダーを書き込むときだけ、先頭バイトの出力前に `CompositionTime` が SI24 の範囲に収まるか検査する。範囲外なら `InvalidInput` を返し、範囲内の値は補正しない。非 AVC の扱いとデコードは変更していない。
+- 既存の RTMP 送信経路で同じエラーを伝える。公開文書には SI24 の制約と、`RtmpTimestampDelta` の格納範囲およびチャンク時刻差分との違いを記載した。
+- 既存の FLV と RTMP の往復テストに上下限を含め、FLV では固定バイト列も照合した。範囲外の値で直接の出力と送信待ちのバイト列を変えず、後続チャンクにも影響しないことを検証した。

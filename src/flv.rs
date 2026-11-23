@@ -114,12 +114,15 @@ pub fn decode_audio_frame(buf: &[u8], timestamp: RtmpTimestamp) -> Result<AudioF
 ///
 /// フレームタイプとコーデックに続け、AVC の場合だけパケットタイプと
 /// 合成タイムスタンプオフセット（CompositionTime）を書き込む。
+/// CompositionTime は表現できる範囲だけを検証し、パケットタイプに応じた補正はしない。
 /// [`VideoFrame::data`] はその後にそのまま書き込む。コマンドフレームでも同じ順序を使う。
 ///
 /// # エラー
 ///
-/// AVC で `avc_packet_type` が `None`、または非 AVC で `Some` の場合は
+/// AVC で `avc_packet_type` が `None`、非 AVC で `Some`、または AVC の CompositionTime が
+/// SI24 の範囲（`-8_388_608..=8_388_607` ミリ秒）外の場合は、
 /// [`crate::error::ErrorKind::InvalidInput`] を返し、`buf` を変更しない。
+/// 非 AVC の CompositionTime は書き込まず、範囲も検証しない。
 pub fn encode_video_frame(buf: &mut Vec<u8>, frame: &VideoFrame) -> Result<(), Error> {
     // Adobe FLV 仕様 10.1 の E.4.3.1 節では CodecID == 7 の場合だけ AVC 追加ヘッダーがある。
     // 他の映像タグ仕様を採用するときは、この条件とデコード側の条件を見直す。
@@ -138,11 +141,20 @@ pub fn encode_video_frame(buf: &mut Vec<u8>, frame: &VideoFrame) -> Result<(), E
         }
     };
 
+    // Adobe FLV 仕様 10.1 の E.4.3.1 節では CompositionTime は SI24 である。
+    // 下位 24 ビットを取り出す前に検証し、新しいタグ形式で値の表現が変わる場合は見直す。
+    let composition_time = frame.composition_timestamp_offset.as_millis();
+    if avc_packet_type.is_some() && !(-8_388_608..=8_388_607).contains(&composition_time) {
+        return Err(Error::invalid_input(format!(
+            "AVC CompositionTime is outside the signed 24-bit range: {composition_time} ms"
+        )));
+    }
+
     let frame_type_codec = ((frame.frame_type as u8) << 4) | (frame.codec as u8);
     buf.write_u8(frame_type_codec);
     if let Some(avc_packet_type) = avc_packet_type {
         buf.write_u8(avc_packet_type as u8);
-        buf.write_i24(frame.composition_timestamp_offset.as_millis());
+        buf.write_i24(composition_time);
     }
     buf.write_bytes(&frame.data);
     Ok(())

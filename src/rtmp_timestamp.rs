@@ -38,9 +38,12 @@ impl RtmpTimestamp {
     }
 }
 
-/// RTMP のタイムスタンプの差分を表す構造体
+/// ミリ秒単位の符号付きタイムスタンプ差分を表す構造体
 ///
-/// RTMP では、タイムスタンプの差分はミリ秒単位の符号付き 32 ビット整数として扱われる
+/// この型は符号付き 32 ビット整数（`i32`）を保持する。
+/// legacy FLV の AVC 追加ヘッダーに書き込む CompositionTime の値域（SI24）とは異なる。
+/// Adobe RTMP 仕様（2012 年 12 月版）4 節で定める、符号なし 24 または 32 ビットの
+/// チャンクのタイムスタンプ差分を表す型ではない。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct RtmpTimestampDelta(i32);
 
