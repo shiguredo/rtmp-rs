@@ -248,10 +248,14 @@ fn message_channel_rejects_invalid_video_without_changing_output() -> noprop::Te
             "後続メッセージは形式 3 の圧縮ヘッダーを使うはず"
         );
 
-        // 両方の不正な組み合わせを、同じ先行履歴から個別に検証する。
-        for (codec, avc_packet_type) in [
-            (VideoCodec::Avc, None),
-            (VideoCodec::Jpeg, Some(AvcPacketType::NalUnit)),
+        // パケットタイプの不整合と SI24 の範囲外を、同じ先行履歴から個別に検証する。
+        let nalu = Some(AvcPacketType::NalUnit);
+        for (codec, avc_packet_type, offset) in [
+            (VideoCodec::Avc, None, 0),
+            (VideoCodec::Jpeg, nalu, 0),
+            (VideoCodec::Avc, nalu, -8_388_609),
+            (VideoCodec::Avc, nalu, 8_388_608),
+            (VideoCodec::Avc, nalu, 0x0100_0000),
         ] {
             let mut channel = setup();
             let pending = channel.send_buf().to_vec();
@@ -261,14 +265,18 @@ fn message_channel_rejects_invalid_video_without_changing_output() -> noprop::Te
                 VideoFrame {
                     codec,
                     avc_packet_type,
-                    composition_timestamp_offset: RtmpTimestampDelta::ZERO,
+                    composition_timestamp_offset: RtmpTimestampDelta::from_millis(offset),
                     ..frame.clone()
                 },
             );
-            let error = channel.feed_send_message(invalid).expect_err(
-                "コーデックと AVC パケットタイプの組み合わせが不正な映像は拒否するはず",
+            let error = channel
+                .feed_send_message(invalid)
+                .expect_err("ヘッダーを正しく書けない映像は拒否するはず");
+            assert_eq!(
+                error.kind,
+                ErrorKind::InvalidInput,
+                "不正入力のエラー種別: {codec:?}, {avc_packet_type:?}, {offset}"
             );
-            assert_eq!(error.kind, ErrorKind::InvalidInput, "入力エラーを返すはず");
             assert_eq!(
                 channel.send_buf(),
                 pending,

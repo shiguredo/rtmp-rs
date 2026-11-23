@@ -38,6 +38,9 @@
 - [FIX] FLV の AVC 追加ヘッダーをコマンドフレームでも読み書きし、コーデックとパケットタイプが矛盾する送信を拒否する
   - @voluntas
 
+- [FIX] FLV の AVC `CompositionTime` が符号付き 24 ビットの範囲外なら、切り詰めずに入力エラーを返す
+  - @voluntas
+
 ### misc
 
 - [UPDATE] PBT を proptest から noprop に移行する
