@@ -228,7 +228,8 @@ fn sample_audio_frame(ctx: &mut TestCaseContext) -> AudioFrame {
     let timestamp_ms = noprop::sample_u32(ctx);
     let format = sample_audio_format(ctx);
     let sample_rate = sample_audio_sample_rate(ctx);
-    let is_8bit_sample = noprop::sample_bool(ctx);
+    // Speex は SoundSize 1 にそろうため、可逆性は正規化済みの値で検証する。
+    let is_8bit_sample = noprop::sample_bool(ctx) && format != AudioFormat::Speex;
     let is_stereo = noprop::sample_bool(ctx);
     let is_aac_sequence_header = noprop::sample_bool(ctx);
     let data_len = noprop::sample_usize_in(ctx, 0..256);
