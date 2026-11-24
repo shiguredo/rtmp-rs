@@ -51,8 +51,8 @@ impl RtmpMessageStreamId {
 
 /// RTMP メッセージの種別
 ///
-/// variant の値は RTMP 仕様で定義されたメッセージタイプ ID に対応する。
-/// メッセージタイプ ID の一覧は RTMP 仕様 6 章を参照。
+/// バリアントの値は RTMP 仕様で定義されたメッセージタイプ ID に対応する。
+/// 制御メッセージは RTMP 仕様 5.4 節と 6.2 節、それ以外の種別は 7.1 節を参照する。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RtmpMessageType {
     /// チャンクサイズを変更するプロトコル制御メッセージ（タイプ ID 1）
@@ -94,21 +94,34 @@ pub enum RtmpMessageType {
     /// AMF3 でエンコードされたデータメッセージ（タイプ ID 15）
     DataAmf3 = 15,
 
+    /// AMF3 の Shared Object メッセージ（タイプ ID 16）。メッセージデコーダーは内容を処理しない。
+    SharedObjectAmf3 = 16,
+
     /// AMF3 でエンコードされたコマンドメッセージ（タイプ ID 17）
     CommandAmf3 = 17,
 
     /// AMF0 でエンコードされたデータメッセージ（タイプ ID 18）
     DataAmf0 = 18,
 
+    /// AMF0 の Shared Object メッセージ（タイプ ID 19）。メッセージデコーダーは内容を処理しない。
+    SharedObjectAmf0 = 19,
+
     /// AMF0 でエンコードされたコマンドメッセージ（タイプ ID 20）
     CommandAmf0 = 20,
+
+    /// 複数のメッセージをまとめる Aggregate メッセージ（タイプ ID 22）。内容は展開しない。
+    Aggregate = 22,
 }
 
 impl RtmpMessageType {
     /// メッセージタイプ ID からメッセージ種別を生成する
     ///
+    /// ID の認識は、ボディの解釈や [`RtmpMessage`] による送信への対応を意味しない。
     /// 未知のタイプ ID の場合は [`Error`] を返す。
     pub fn from_type_id(type_id: u8) -> Result<Self, Error> {
+        // Adobe RTMP 仕様（2012 年 12 月版）7.1.3 節は Shared Object を 16 / 19、
+        // 7.1.6 節は Aggregate を 22 と定める。新しい仕様で種別が増えた場合は、
+        // 対応するデコーダーの処理と合わせてこの対応表を見直す。
         match type_id {
             1 => Ok(RtmpMessageType::SetChunkSize),
             2 => Ok(RtmpMessageType::Abort),
@@ -119,9 +132,12 @@ impl RtmpMessageType {
             8 => Ok(RtmpMessageType::Audio),
             9 => Ok(RtmpMessageType::Video),
             15 => Ok(RtmpMessageType::DataAmf3),
+            16 => Ok(RtmpMessageType::SharedObjectAmf3),
             17 => Ok(RtmpMessageType::CommandAmf3),
             18 => Ok(RtmpMessageType::DataAmf0),
+            19 => Ok(RtmpMessageType::SharedObjectAmf0),
             20 => Ok(RtmpMessageType::CommandAmf0),
+            22 => Ok(RtmpMessageType::Aggregate),
             _ => Err(Error::invalid_data(format!(
                 "unknown message type: {type_id}"
             ))),

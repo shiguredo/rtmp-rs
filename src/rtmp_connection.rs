@@ -11,8 +11,8 @@ use crate::error::Error;
 use crate::media::{AudioFrame, VideoFrame};
 use crate::rtmp_chunk::{RtmpChunkSize, RtmpChunkStreamId};
 use crate::rtmp_command::RtmpCommand;
-use crate::rtmp_message::RtmpMessage;
-use crate::rtmp_message_decoder::RtmpMessageDecoder;
+use crate::rtmp_message::{RtmpMessage, RtmpMessageHeader, RtmpMessageType};
+use crate::rtmp_message_decoder::{ReceivedMessage, RtmpMessageDecoder};
 use crate::rtmp_message_encoder::RtmpMessageEncoder;
 #[cfg(doc)]
 use crate::rtmp_server_connection::RtmpServerConnection;
@@ -93,8 +93,9 @@ pub enum RtmpConnectionEvent {
 
     /// RTMP のメッセージが無視された（デバッグ用イベント）
     ///
-    /// サーバーおよびクライアントコネクションは明示的なハンドリングが不要なイベントを受信した場合には
-    /// 無視をするので、その通知 （通常は利用者がこのイベントを明示的にハンドリングする必要はない）
+    /// 明示的な処理が不要なメッセージや、内容に対応していない Shared Object と Aggregate の通知。
+    /// Shared Object と Aggregate の詳細にはメッセージストリーム ID とタイムスタンプだけを含める。
+    /// 通常は利用者がこのイベントを明示的に処理する必要はない。
     MessageIgnored {
         /// メッセージ名
         name: String,
@@ -128,6 +129,20 @@ impl RtmpConnectionEvent {
         Self::MessageIgnored {
             name: format!("{:?}", message.message_type()),
             detail: format!("{message:?}"),
+        }
+    }
+
+    pub(crate) fn unsupported_message_ignored(
+        message_type: RtmpMessageType,
+        header: RtmpMessageHeader,
+    ) -> Self {
+        Self::MessageIgnored {
+            name: format!("{message_type:?}"),
+            detail: format!(
+                "message stream ID: {}, timestamp: {} ms",
+                header.stream_id.get(),
+                header.timestamp.as_millis()
+            ),
         }
     }
 
@@ -215,7 +230,7 @@ impl fmt::Display for RtmpConnectionState {
 pub struct RtmpMessageChannel {
     decoder: RtmpMessageDecoder,
     encoder: RtmpMessageEncoder,
-    decoded_messages: VecDeque<RtmpMessage>,
+    received_messages: VecDeque<ReceivedMessage>,
     send_buf: Buf,
 
     // こちらが送る ACK は従来どおり、チャンクだけを 32 ビットで数える。
@@ -273,7 +288,7 @@ impl AckProgress {
 }
 
 impl RtmpMessageChannel {
-    /// 受信したバイト列をデコーダーに渡し、デコード済みのメッセージを内部キューに追加する
+    /// 受信したバイト列をデコーダーに渡し、組み立てが完了したメッセージを順に内部キューへ追加する
     ///
     /// ACK を送信する必要がある場合は、その時点の累計受信バイト数を `Some` で返す。
     /// デコードに失敗した場合は [`Error`] を返す。
@@ -281,8 +296,8 @@ impl RtmpMessageChannel {
         self.decoder.feed_buf(buf);
         self.total_bytes_received = self.total_bytes_received.wrapping_add(buf.len() as u32);
 
-        while let Some(message) = self.decoder.decode()? {
-            self.decoded_messages.push_back(message);
+        while let Some(message) = self.decoder.decode_next()? {
+            self.received_messages.push_back(message);
         }
 
         // ACK を送る必要があるなら送るように呼び出し元に指示する
@@ -329,11 +344,22 @@ impl RtmpMessageChannel {
         unacked_bytes <= u64::from(self.local_ack_window_size) * 2
     }
 
-    /// デコード済みのメッセージを 1 つ取り出す
+    /// 対応済みのメッセージを 1 つ取り出す
     ///
-    /// キューが空の場合は `None` を返す。
+    /// Shared Object（AMF0 / AMF3）と Aggregate は読み飛ばす。
+    /// 読み飛ばした後も対応済みのメッセージがあれば同じ呼び出しで返し、なければ `None` を返す。
     pub fn next_recv_message(&mut self) -> Option<RtmpMessage> {
-        self.decoded_messages.pop_front()
+        while let Some(received) = self.next_received() {
+            if let ReceivedMessage::Message(message) = received {
+                return Some(message);
+            }
+        }
+        None
+    }
+
+    /// 内容を無視するメッセージも含めて、組み立てが完了した順に取り出す。
+    pub(crate) fn next_received(&mut self) -> Option<ReceivedMessage> {
+        self.received_messages.pop_front()
     }
 
     /// メッセージをチャンクにエンコードして送信バッファの末尾に追加する

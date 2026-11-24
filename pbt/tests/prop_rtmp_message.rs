@@ -26,6 +26,9 @@ use shiguredo_rtmp::rtmp_message_encoder::RtmpMessageEncoder;
 use shiguredo_rtmp::rtmp_timestamp::{RtmpTimestamp, RtmpTimestampDelta};
 use shiguredo_rtmp::rtmp_user_control_event::RtmpUserControlEvent;
 
+#[path = "../../tests/helpers/rtmp_ignored_message.rs"]
+pub mod rtmp_ignored_message;
+
 /// このファイルの roundtrip テストの PBT ケース数
 const CASES: usize = 500;
 
@@ -792,6 +795,153 @@ fn all_message_roundtrip() -> noprop::TestResult {
         Ok(())
     })?;
     Ok(())
+}
+
+mod ignored_message_reception {
+    use noprop::TestCaseContext;
+    use shiguredo_rtmp::error::ErrorKind;
+    use shiguredo_rtmp::rtmp_chunk::{RtmpChunk, RtmpChunkSize, RtmpChunkStreamId};
+    use shiguredo_rtmp::rtmp_chunk_encoder::RtmpChunkEncoder;
+    use shiguredo_rtmp::rtmp_connection::RtmpMessageChannel;
+    use shiguredo_rtmp::rtmp_message::{
+        RtmpMessage, RtmpMessageHeader, RtmpMessageStreamId, RtmpMessageType,
+    };
+    use shiguredo_rtmp::rtmp_message_decoder::RtmpMessageDecoder;
+    use shiguredo_rtmp::rtmp_message_encoder::RtmpMessageEncoder;
+    use shiguredo_rtmp::rtmp_timestamp::RtmpTimestamp;
+
+    use super::rtmp_ignored_message::sample_ignored_messages;
+    use super::{BOUNDARY_CASES, SEED_ENV, sample_audio_message};
+
+    /// 無視対象が完成しても decode は途切れず、すでに受信した対応済みメッセージを返す
+    #[test]
+    fn decode_skips_ignored_message_without_requesting_more_input() -> noprop::TestResult {
+        let seed = noprop::seed_from_env_or_time(SEED_ENV)?;
+        noprop::Runner::new(seed).run(BOUNDARY_CASES, |ctx: &mut TestCaseContext| {
+            for sample in sample_ignored_messages(ctx) {
+                let mut decoder = RtmpMessageDecoder::default();
+                decoder.feed_buf(&sample.incomplete);
+                assert_eq!(
+                    decoder.decode().expect("途中の入力はエラーにならないはず"),
+                    None,
+                    "未完成のメッセージは取り出せないはず"
+                );
+
+                decoder.feed_buf(&sample.completion);
+                // 先に完成した音声の後、連続する無視対象を飛ばして形式 1 の音声を返す。
+                for expected in sample.into_audio_messages() {
+                    assert_eq!(
+                        decoder.decode().expect("完成した入力をデコードできるはず"),
+                        Some(expected),
+                        "対応済みメッセージを追加の入力なしで完成順に取り出せるはず"
+                    );
+                }
+                assert_eq!(
+                    decoder
+                        .decode()
+                        .expect("全メッセージ消費後にエラーにならないはず"),
+                    None,
+                    "無視対象は通常メッセージとして返さないはず"
+                );
+            }
+            Ok(())
+        })?;
+        Ok(())
+    }
+
+    /// 受信途中の無視対象を Abort で破棄し、同じチャンクストリームで新しいメッセージを受信する
+    #[test]
+    fn abort_discards_an_incomplete_ignored_message() -> noprop::TestResult {
+        let seed = noprop::seed_from_env_or_time(SEED_ENV)?;
+        noprop::Runner::new(seed).run(BOUNDARY_CASES, |ctx: &mut TestCaseContext| {
+            let chunk_stream_id = RtmpChunkStreamId::new(noprop::sample_u32_in(ctx, 3..=63))
+                .expect("3 から 63 は有効なチャンクストリーム ID");
+            let chunk_size = RtmpChunkSize::default().get();
+            let payload_len = noprop::sample_usize_in(ctx, (chunk_size + 1)..=(2 * chunk_size));
+            let mut wire = Vec::new();
+            RtmpChunkEncoder::default().encode(
+                &mut wire,
+                &RtmpChunk {
+                    chunk_stream_id,
+                    message_stream_id: RtmpMessageStreamId::MEDIA,
+                    message_type: RtmpMessageType::SharedObjectAmf0,
+                    timestamp: RtmpTimestamp::ZERO,
+                    payload: noprop::sample_bytes_vec(ctx, payload_len),
+                },
+            );
+            // Adobe RTMP 仕様（2012 年 12 月版）5.3.1 節のこの形式ではヘッダーは計 12 バイト。
+            // 5.4.2 節に従い 1 チャンク目で送信を打ち切って Abort を送る。形式が変わる場合は見直す。
+            wire.truncate(12 + chunk_size);
+            let abort = RtmpMessage::Abort {
+                header: RtmpMessageHeader::PCM,
+                chunk_stream_id,
+            };
+            let control_id = RtmpChunkStreamId::new(2).expect("2 は制御用のチャンクストリーム ID");
+            RtmpMessageEncoder::default()
+                .encode(&mut wire, control_id, abort.clone())
+                .expect("制御ストリームに Abort を書き込めるはず");
+            let audio = sample_audio_message(ctx);
+            // 新しいエンコーダーを使い、破棄したメッセージの圧縮履歴を参照しない。
+            RtmpMessageEncoder::default()
+                .encode(&mut wire, chunk_stream_id, audio.clone())
+                .expect("同じチャンクストリームに新しい音声を書き込めるはず");
+
+            let mut decoder = RtmpMessageDecoder::default();
+            decoder.feed_buf(&wire);
+            for message in [Some(abort), Some(audio), None] {
+                assert_eq!(
+                    decoder
+                        .decode()
+                        .expect("Abort 後の有効な入力を受理するはず"),
+                    message,
+                    "中断したデータを破棄し、Abort と新しい音声だけを返すはず"
+                );
+            }
+            Ok(())
+        })?;
+        Ok(())
+    }
+
+    /// 対応外の予約・未定義 ID では従来と同じエラーになる
+    #[test]
+    fn unrecognized_message_type_is_invalid_data() -> noprop::TestResult {
+        let seed = noprop::seed_from_env_or_time(SEED_ENV)?;
+        noprop::Runner::new(seed).run(BOUNDARY_CASES, |ctx: &mut TestCaseContext| {
+            let type_id = match noprop::sample_usize_in(ctx, 0..5) {
+                0 => 0,
+                1 => 7,
+                2 => noprop::sample_u8_in(ctx, 10..=14),
+                3 => 21,
+                _ => noprop::sample_u8_in(ctx, 23..=u8::MAX),
+            };
+            // Adobe RTMP 仕様（2012 年 12 月版）5.3.1 節の形式 0 のヘッダーを使う。
+            // 公開エンコーダーに渡せない未知型を検証するため、型 ID 以外を固定する。
+            // CSID 3、タイムスタンプ 0、ペイロード長 0、メッセージストリーム ID 1 とする。
+            // ヘッダー形式や型 ID の割り当てが変わる場合は入力を見直す。
+            let buf = [3, 0, 0, 0, 0, 0, 0, type_id, 1, 0, 0, 0];
+            let mut decoder = RtmpMessageDecoder::default();
+            decoder.feed_buf(&buf);
+            let error = decoder
+                .decode()
+                .expect_err("未知型はデコードを拒否するはず");
+            assert_eq!(
+                error.kind,
+                ErrorKind::InvalidData,
+                "未知型 {type_id} のデコードエラー種別"
+            );
+
+            let error = RtmpMessageChannel::default()
+                .feed_recv_buf(&buf)
+                .expect_err("チャネルは未知型のエラーを呼び出し側へ返すはず");
+            assert_eq!(
+                error.kind,
+                ErrorKind::InvalidData,
+                "未知型 {type_id} のチャネル受信エラー種別"
+            );
+            Ok(())
+        })?;
+        Ok(())
+    }
 }
 
 // =============================================================================

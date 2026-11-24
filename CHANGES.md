@@ -17,6 +17,9 @@
 - [CHANGE] `encode_video_frame`、`RtmpMessageEncoder::encode`、`RtmpMessageChannel::feed_send_message` の戻り値を `Result<(), Error>` にする
   - @voluntas
 
+- [CHANGE] `RtmpMessageType` に `SharedObjectAmf3`、`SharedObjectAmf0`、`Aggregate` を追加する。網羅的な `match` には分岐の追加が必要になる
+  - @voluntas
+
 - [ADD] RTMP の各要素をモジュールとして公開 API に追加する
   - @voluntas
 
@@ -39,6 +42,9 @@
   - @voluntas
 
 - [FIX] FLV の AVC `CompositionTime` が符号付き 24 ビットの範囲外なら、切り詰めずに入力エラーを返す
+  - @voluntas
+
+- [FIX] Shared Object と Aggregate の型 ID を受理し、本文を読み飛ばして `MessageIgnored` を通知する
   - @voluntas
 
 ### misc

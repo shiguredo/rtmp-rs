@@ -22,6 +22,9 @@ use shiguredo_rtmp::rtmp_server_connection::RtmpServerConnection;
 use shiguredo_rtmp::rtmp_timestamp::{RtmpTimestamp, RtmpTimestampDelta};
 use shiguredo_rtmp::rtmp_user_control_event::RtmpUserControlEvent;
 
+#[path = "../../tests/helpers/rtmp_ignored_message.rs"]
+pub mod rtmp_ignored_message;
+
 /// このファイルの PBT ケース数
 ///
 /// 移行前のケース数をそのまま維持する。
@@ -728,6 +731,44 @@ fn recv_media_events() -> noprop::TestResult {
                 .any(|event| matches!(event, RtmpConnectionEvent::VideoReceived(f) if *f == video)),
             "VideoReceived イベントが発火しなかった: {events:?}"
         );
+        Ok(())
+    })?;
+    Ok(())
+}
+
+/// サーバーは無視対象を完成順に 1 件ずつ通知し、同じ入力で後続の音声を処理する
+#[test]
+fn server_notifies_ignored_messages_in_completion_order() -> noprop::TestResult {
+    let seed = noprop::seed_from_env_or_time(SEED_ENV)?;
+    noprop::Runner::new(seed).run(CASES, |ctx: &mut TestCaseContext| {
+        // ハンドシェイクとは別の受信呼び出しで配信を開始した後、音声と無視対象を送る。
+        let mut server = RtmpServerConnection::new();
+        perform_handshake(&mut server);
+        let mut transaction_id = TransactionId::NON_RESERVED_START;
+        connect_and_create_stream(
+            &mut server,
+            "live".to_owned(),
+            "FMLE/3.0".to_owned(),
+            "rtmp://example.invalid/live".to_owned(),
+            transaction_id,
+        );
+        transaction_id.increment();
+        let publish = RtmpCommand::Publish(RtmpPublishCommand {
+            transaction_id,
+            stream_name: "stream".to_owned(),
+        });
+        send_command(&mut server, publish).expect("publish を処理できるはず");
+        server.accept().expect("publish を受理できるはず");
+        drain_events(&mut server);
+
+        for sample in rtmp_ignored_message::sample_ignored_messages(ctx) {
+            sample.assert_events(RtmpConnectionState::Publishing, |buf| {
+                server
+                    .feed_recv_buf(buf)
+                    .expect("サーバーは分割入力を受理するはず");
+                (server.state(), drain_events(&mut server))
+            });
+        }
         Ok(())
     })?;
     Ok(())

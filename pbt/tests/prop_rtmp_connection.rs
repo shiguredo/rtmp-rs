@@ -12,6 +12,9 @@ use shiguredo_rtmp::rtmp_message_decoder::RtmpMessageDecoder;
 use shiguredo_rtmp::rtmp_timestamp::{RtmpTimestamp, RtmpTimestampDelta};
 use shiguredo_rtmp::rtmp_user_control_event::RtmpUserControlEvent;
 
+#[path = "../../tests/helpers/rtmp_ignored_message.rs"]
+pub mod rtmp_ignored_message;
+
 /// このファイルの PBT ケース数
 const CASES: usize = 300;
 
@@ -290,6 +293,57 @@ fn message_channel_rejects_invalid_video_without_changing_output() -> noprop::Te
                 channel.send_buf(),
                 control.send_buf(),
                 "失敗しなかった対照とチャンク分割・圧縮ヘッダーを含む送信バイト列が一致するはず"
+            );
+        }
+        Ok(())
+    })?;
+    Ok(())
+}
+
+/// チャネルは無視対象を飛ばして次の通常メッセージを返し、ACK には受信した全バイトを数える
+#[test]
+fn message_channel_skips_ignored_messages_and_counts_their_bytes() -> noprop::TestResult {
+    let seed = noprop::seed_from_env_or_time(SEED_ENV)?;
+    noprop::Runner::new(seed).run(CASES, |ctx: &mut TestCaseContext| {
+        for sample in rtmp_ignored_message::sample_ignored_messages(ctx) {
+            let mut channel = RtmpMessageChannel::default();
+            // メッセージの完成とは無関係に、各入力だけで ACK 閾値を超えるようにする。
+            let incomplete_len = sample.incomplete.len() as u32;
+            let completion_len = sample.completion.len() as u32;
+            channel.set_peer_ack_window_size(2 * incomplete_len.min(completion_len) - 1);
+            assert_eq!(
+                channel
+                    .feed_recv_buf(&sample.incomplete)
+                    .expect("未完成の入力も受理するはず"),
+                Some(incomplete_len),
+                "組み立てが完了する前に受信済みバイト数を ACK に含めるはず"
+            );
+            assert_eq!(
+                channel.next_recv_message(),
+                None,
+                "未完成のメッセージは取り出せないはず"
+            );
+
+            let total_bytes = incomplete_len + completion_len;
+            assert_eq!(
+                channel
+                    .feed_recv_buf(&sample.completion)
+                    .expect("残りの入力も受理するはず"),
+                Some(total_bytes),
+                "ACK には無視したメッセージのチャンクも含めるはず"
+            );
+            // キュー途中の無視対象が原因で None を返すと、後続の音声を取り出せない。
+            for expected in sample.into_audio_messages() {
+                assert_eq!(
+                    channel.next_recv_message(),
+                    Some(expected),
+                    "対応済みメッセージを追加の入力なしで完成順に取り出せるはず"
+                );
+            }
+            assert_eq!(
+                channel.next_recv_message(),
+                None,
+                "無視対象は通常メッセージとして返さないはず"
             );
         }
         Ok(())
