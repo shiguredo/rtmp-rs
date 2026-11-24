@@ -1,7 +1,7 @@
 # サーバーは Connecting のときだけ connect を受理する
 
 - Created: 2026-11-22
-- Completed: {YYYY-MM-DD}
+- Completed: 2026-11-25
 - Branch: feature/fix-server-connect-state-guard
 - Polished: 2026-11-22
 
@@ -32,5 +32,6 @@
 
 ## 解決方法
 
-1. `RtmpServerConnection::handle_connect_command` の副作用より前に状態検査を追加し、受理条件をコメントで明示する。
-2. 呼び出し元の既存の `Result` 経路でエラーを伝播し、公開 API の回帰テストで拒否時の状態と応答を確認する。
+- `RtmpServerConnection` は、型変換が成功した `connect` を `Connecting` の場合だけ処理する。それ以外では応答・状態・保存済みの接続情報を変えずに `InvalidState` を返す。受信 ACK や先行メッセージの処理は取り消さず、継続する場合は入力を再投入せずに空入力でも再開できる。
+- サーバーはハンドシェイク受信完了時に送信側の ACK ウィンドウを初期化する。初回要求の途中で ACK を送っても接続待ちを維持し、初回成功時の応答順と既存のウィンドウ再設定は維持した。クライアント側は変更していない。
+- 公開 API の性質テストで、初回の分割受信と応答順、接続済み・配信中・再生中の拒否、初回の `app` と `tc_url` の保持を確認した。拒否前後の処理と、型変換エラーの区別も検証した。
