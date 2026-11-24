@@ -2,47 +2,36 @@
 
 - Created: 2026-11-22
 - Completed: {YYYY-MM-DD}
-- Branch: feature/fix-flv-sound-size
-- Polished: {YYYY-MM-DD}
+- Branch: feature/change-flv-sound-size
+- Polished: 2026-11-25
 
 ## 目的
 
-FLV 音声タグの SoundSize ビットの解釈を仕様に合わせ、8 bit と 16 bit のサンプルサイズを正しく通知・解釈できるようにする。
+legacy FLV の音声タグで SoundSize の極性を仕様に合わせ、非圧縮音声の 8 ビットと 16 ビットを正しく識別できるようにする。
 
 ## 現状
 
-- FLV 仕様（`refs/enhanced-rtmp-v2.md` の Pre 2023 AudioTagHeader）では、SoundSize は 0 = 8-bit samples、1 = 16-bit samples と定義されている。
-- `src/flv.rs` の `decode_audio_frame` は `let is_8bit_sample = (header & 0x02) != 0;` としており、ビット 1 が立っていると 8 bit と解釈する。仕様とは逆である。
-- `src/flv.rs` の `encode_audio_frame` は `(frame.is_8bit_sample as u8) << 1` でビットを立てるため、`is_8bit_sample = false`（16 bit）のフレームが SoundSize 0（8 bit 相当）で送信される。
-- エンコードとデコードが同じ誤解釈を共有しているため、ライブラリ内の往復テストでは検出できない。
+- [Adobe FLV 仕様 10.1 §E.4.2.1](https://veovera.github.io/enhanced-rtmp/docs/legacy/video-file-format-v10-1-spec.pdf#page=76) の AudioTagHeader では、非圧縮音声の SoundSize を 0 = 8 ビット、1 = 16 ビットと定義している。
+- `decode_audio_frame` は `(header & 0x02) != 0` を `is_8bit_sample` としている。`encode_audio_frame` も `is_8bit_sample` をそのままビット 1 に書き込む。両方向で誤りが相殺されるため、往復テストだけでは検出できない。
 
 ### 再現条件
 
-1. `decode_audio_frame(&[0x2F], RtmpTimestamp::ZERO)` を呼ぶ。`0x2F` は SoundFormat 2（MP3）、SoundRate 3（44 kHz）、SoundSize 1（16 bit）、SoundType 1（stereo）。
-2. `is_8bit_sample` を確認する。
-
-期待は `false`（16 bit）。実際は `true`（8 bit）になる。
-
-逆方向では、`is_8bit_sample = false` の `AudioFrame` を `encode_audio_frame` でエンコードすると、SoundSize ビットが 0 になる。
+44 kHz・モノラルのリトルエンディアン PCM（SoundFormat 3）として、`decode_audio_frame(&[0x3E, 0x34, 0x12], RtmpTimestamp::ZERO)` を呼ぶ。SoundSize は 1 なので期待値は `is_8bit_sample = false` だが、現行実装は `true` を返す。同じ音声データを `is_8bit_sample = false` のフレームからエンコードしても、現行実装はヘッダーを `0x3C` にする。
 
 ## 設計方針
 
-- `encode_audio_frame` と `decode_audio_frame` の両方で、SoundSize ビットの意味を仕様に合わせる。`is_8bit_sample` が `true` のときビット 1 を 0、`false` のときビット 1 を 1 とする。
-- 公開 API の `AudioFrame::is_8bit_sample` の名前と意味は維持する。挙動が変わるため、CHANGES.md に CHANGE として記載する。
-- 0x2F（16 bit）と 0x2E（8 bit）などのゴールデンバイトテストを追加し、往復テストだけに頼らないようにする。
-- AAC など SoundSize が無視されるフォーマットの扱いは現行どおりとする。
+- Speex を除く対応済み legacy 形式では、`encode_audio_frame` と `decode_audio_frame` が SoundSize 0 と `is_8bit_sample = true`、SoundSize 1 と `false` を対応付ける。圧縮音声では実サンプル幅ではなくヘッダーの値を表す。PCM 形式 0 の追加は後続の 0041 で行う。
+- [Adobe FLV 仕様 10.1 §E.4.2.1](https://veovera.github.io/enhanced-rtmp/docs/legacy/video-file-format-v10-1-spec.pdf#page=77) は Speex の SoundSize を 1 と規定する。送信では常に 1 とし、受信は入力ビットを使わず 1 として扱う。仕様は受信側の拒否を要求していない。SoundRate、SoundType、AACPacketType、ペイロードの扱いは今回変えない。
+- `AudioFrame::is_8bit_sample` の名前と型は維持し、ヘッダーとの対応と Speex の例外を公開文書に明記する。同じ入力で返すフラグと同じフレームから出力するビットが変わるため、変更履歴に `[CHANGE]` を記載する。旧版でビットが逆に出力された PCM は値だけでは識別できないため、自動補正しない。
 
 ## 完了条件
 
-- `0x2F` のデコードで `is_8bit_sample = false` になる。
-- 16 bit の `AudioFrame` のエンコードで SoundSize ビットが 1 になる。
-- 8 bit / 16 bit の両方でエンコードとデコードの往復が一致する。
-- 既存の音声フォーマットと AAC のテストに回帰がない。
-- 上記を確認する単体テストを追加する。
+- 44 kHz・モノラル・リトルエンディアン PCM の 8 ビットは `[0x3C, 0x80]`、16 ビットは `[0x3E, 0x34, 0x12]` とする。デコードではそれぞれ `is_8bit_sample = true` と `false` を返し、ペイロードを保持する。各フレームをエンコードしても同じバイト列になることを、デコード結果を使わずにそれぞれ検証する。
+- Speex は仕様に従い SoundRate のビット値 0、SoundType のビット値 0（モノラル）で検証する。`0xB0` と `0xB2` のヘッダーをどちらも受理し、フラグは `false` にする。同じフィールドを指定して書き込むと、どちらのフラグでも `0xB2` になり、ペイロードは変わらない。
+- 公開 API の性質テストで固定バイト列との照合に加え、既存の FLV と RTMP 音声メッセージの往復を確認する。FLV の往復では Speex の送信時の正規化を考慮し、他の形式ではフレームとペイロードが一致することを確認する。
 
 ## 解決方法
 
-1. `src/flv.rs` の `decode_audio_frame` の SoundSize の解釈を反転する。
-2. `src/flv.rs` の `encode_audio_frame` の SoundSize の書き込みを反転する。
-3. ゴールデンバイトテストと往復テストを追加する。
-4. `CHANGES.md` に CHANGE として記載する。
+1. FLV の音声タグで共通の SoundSize の対応を直し、Speex の読み書きは固定値にそろえる。公開フィールドの説明を更新する。
+2. PCM と Speex の固定ヘッダーをエンコードとデコードの両方から照合し、FLV と RTMP の往復性質テストを実行する。
+3. 変更履歴に `[CHANGE]` を記載する。
