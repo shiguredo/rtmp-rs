@@ -12,6 +12,7 @@ use crate::rtmp_connection::{
 };
 use crate::rtmp_handshake::{HANDSHAKE_BYTES, RtmpClientHandshake};
 use crate::rtmp_message::{RtmpMessage, RtmpMessageHeader, RtmpMessageStreamId};
+use crate::rtmp_message_decoder::ReceivedMessage;
 use crate::rtmp_timestamp::RtmpTimestamp;
 use crate::rtmp_url::RtmpUrl;
 use crate::rtmp_user_control_event::RtmpUserControlEvent;
@@ -290,8 +291,16 @@ impl RtmpClientConnection {
                 let ack_message = RtmpMessage::ack(total_bytes_received);
                 self.message_channel.feed_send_message(ack_message)?;
             }
-            while let Some(message) = self.message_channel.next_recv_message() {
-                self.handle_recv_message(message)?;
+            while let Some(received) = self.message_channel.next_received() {
+                match received {
+                    ReceivedMessage::Message(message) => self.handle_recv_message(message)?,
+                    ReceivedMessage::Ignored {
+                        message_type,
+                        header,
+                    } => self.event_queue.push_back(
+                        RtmpConnectionEvent::unsupported_message_ignored(message_type, header),
+                    ),
+                }
             }
         }
         Ok(())

@@ -54,9 +54,12 @@ fn sample_message_type(ctx: &mut TestCaseContext) -> RtmpMessageType {
             RtmpMessageType::Audio,
             RtmpMessageType::Video,
             RtmpMessageType::DataAmf3,
+            RtmpMessageType::SharedObjectAmf3,
             RtmpMessageType::CommandAmf3,
             RtmpMessageType::DataAmf0,
+            RtmpMessageType::SharedObjectAmf0,
             RtmpMessageType::CommandAmf0,
+            RtmpMessageType::Aggregate,
         ],
     )
 }

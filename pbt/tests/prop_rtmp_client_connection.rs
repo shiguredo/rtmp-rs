@@ -27,6 +27,9 @@ use shiguredo_rtmp::rtmp_timestamp::{RtmpTimestamp, RtmpTimestampDelta};
 use shiguredo_rtmp::rtmp_url::RtmpUrl;
 use shiguredo_rtmp::rtmp_user_control_event::RtmpUserControlEvent;
 
+#[path = "../../tests/helpers/rtmp_ignored_message.rs"]
+pub mod rtmp_ignored_message;
+
 /// このファイルの PBT ケース数 (旧テストの 200 ケースを維持する)
 const CASES: usize = 200;
 
@@ -660,6 +663,26 @@ fn play_receive_media() -> noprop::TestResult {
                 .any(|event| matches!(event, RtmpConnectionEvent::VideoReceived(_))),
             "VideoReceived イベントが見つからない"
         );
+        Ok(())
+    })?;
+    Ok(())
+}
+
+/// 再生クライアントは無視対象を完成順に 1 件ずつ通知し、同じ入力で後続の音声を処理する
+#[test]
+fn play_client_notifies_ignored_messages_in_completion_order() -> noprop::TestResult {
+    let seed = noprop::seed_from_env_or_time(SEED_ENV)?;
+    noprop::Runner::new(seed).run(CASES, |ctx: &mut TestCaseContext| {
+        // ハンドシェイクを済ませてから、別の呼び出しでメッセージの断片を渡す。
+        let mut client = setup_playing_client("rtmp://example.invalid/live", "stream");
+        for sample in rtmp_ignored_message::sample_ignored_messages(ctx) {
+            sample.assert_events(RtmpConnectionState::Playing, |buf| {
+                client
+                    .feed_recv_buf(buf)
+                    .expect("クライアントは分割入力を受理するはず");
+                (client.state(), drain_events_play(&mut client))
+            });
+        }
         Ok(())
     })?;
     Ok(())

@@ -14,6 +14,16 @@ use crate::rtmp_message::{
 };
 use crate::rtmp_user_control_event::RtmpUserControlEvent;
 
+/// 完成した受信メッセージ。内容を扱わない種別は通知に必要な情報のみを保持する。
+#[derive(Debug)]
+pub(crate) enum ReceivedMessage {
+    Message(RtmpMessage),
+    Ignored {
+        message_type: RtmpMessageType,
+        header: RtmpMessageHeader,
+    },
+}
+
 /// RTMP メッセージのデコーダー
 ///
 /// 受信したバイト列を [`RtmpMessageDecoder::feed_buf`] で投入し、
@@ -34,12 +44,15 @@ impl RtmpMessageDecoder {
         self.buf.feed(buf);
     }
 
-    /// 次に受信したメッセージを取り出す
+    /// 次に受信した対応済みのメッセージを取り出す
+    ///
+    /// Shared Object（AMF0 / AMF3）と Aggregate はチャンクを組み立てた後、
+    /// 内容を処理せず読み飛ばす。後続の対応済みメッセージが揃っていれば同じ呼び出しで返す。
     ///
     /// 返り値は次のとおりである。
     ///
-    /// - メッセージを取得できた場合は `Ok(Some(message))`
-    /// - メッセージを組み立てるだけのデータがまだ揃っていない場合は `Ok(None)`
+    /// - 対応済みのメッセージを取得できた場合は `Ok(Some(message))`
+    /// - 対応済みのメッセージが揃っていない場合は `Ok(None)`
     /// - デコードに失敗した場合は `Err(error)`
     ///
     /// `Ok(None)` が返った場合は、続きのバイト列を
@@ -50,6 +63,16 @@ impl RtmpMessageDecoder {
     /// Abort メッセージをデコードした場合は、対象のチャンクストリームの状態を
     /// リセットする（RTMP 仕様 5.4.2 節）。
     pub fn decode(&mut self) -> Result<Option<RtmpMessage>, Error> {
+        while let Some(received) = self.decode_next()? {
+            if let ReceivedMessage::Message(message) = received {
+                return Ok(Some(message));
+            }
+        }
+        Ok(None)
+    }
+
+    /// 次に完成したメッセージを、非対応の種別も含めて接続側に渡す。
+    pub(crate) fn decode_next(&mut self) -> Result<Option<ReceivedMessage>, Error> {
         loop {
             let chunk = match self.chunk_decoder.decode(self.buf.get()) {
                 Ok((size, maybe_chunk)) => {
@@ -69,20 +92,22 @@ impl RtmpMessageDecoder {
                 Err(e) => return Err(e),
             };
 
-            let message = self.chunk_to_message(chunk)?;
-            match &message {
-                RtmpMessage::SetChunkSize { size, .. } => self.chunk_decoder.set_chunk_size(*size),
-                RtmpMessage::Abort {
+            let received = self.chunk_to_message(chunk)?;
+            match &received {
+                ReceivedMessage::Message(RtmpMessage::SetChunkSize { size, .. }) => {
+                    self.chunk_decoder.set_chunk_size(*size);
+                }
+                ReceivedMessage::Message(RtmpMessage::Abort {
                     chunk_stream_id, ..
-                } => self.chunk_decoder.reset_chunk_stream(*chunk_stream_id),
+                }) => self.chunk_decoder.reset_chunk_stream(*chunk_stream_id),
                 _ => {}
             }
 
-            return Ok(Some(message));
+            return Ok(Some(received));
         }
     }
 
-    fn chunk_to_message(&self, chunk: RtmpChunk) -> Result<RtmpMessage, Error> {
+    fn chunk_to_message(&self, chunk: RtmpChunk) -> Result<ReceivedMessage, Error> {
         let header = RtmpMessageHeader {
             stream_id: chunk.message_stream_id,
             timestamp: chunk.timestamp,
@@ -166,9 +191,18 @@ impl RtmpMessageDecoder {
             RtmpMessageType::CommandAmf3 => {
                 self.decode_command(AmfVersion::Amf3, header, chunk.payload.as_slice())?
             }
+            RtmpMessageType::SharedObjectAmf3
+            | RtmpMessageType::SharedObjectAmf0
+            | RtmpMessageType::Aggregate => {
+                // ボディをキューに保持せず、完成したメッセージの通知に必要な情報だけを渡す。
+                return Ok(ReceivedMessage::Ignored {
+                    message_type: chunk.message_type,
+                    header,
+                });
+            }
         };
 
-        Ok(message)
+        Ok(ReceivedMessage::Message(message))
     }
 
     fn decode_command(
