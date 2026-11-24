@@ -174,9 +174,14 @@ fn perform_handshake(server: &mut RtmpServerConnection) {
 
 /// RTMP メッセージをバイト列にエンコードする
 fn encode_message(message: RtmpMessage) -> Vec<u8> {
+    encode_message_on(3, message)
+}
+
+fn encode_message_on(chunk_stream_id: u32, message: RtmpMessage) -> Vec<u8> {
     let mut encoder = RtmpMessageEncoder::default();
     let mut buf = Vec::new();
-    let chunk_stream_id = RtmpChunkStreamId::new(3).expect("3 は有効なチャンクストリーム ID");
+    let chunk_stream_id = RtmpChunkStreamId::new(chunk_stream_id)
+        .expect("テストで使うチャンクストリーム ID は有効なはず");
     encoder
         .encode(&mut buf, chunk_stream_id, message)
         .expect("生成した RTMP メッセージはエンコードできるはず");
@@ -313,42 +318,372 @@ fn finishes_s2_even_if_c2_arrives_first() -> noprop::TestResult {
     Ok(())
 }
 
-/// Connect で Connected に遷移することを検証する
-#[test]
-fn connect_flow() -> noprop::TestResult {
-    let seed = noprop::seed_from_env_or_time(SEED_ENV)?;
-    noprop::Runner::new(seed).run(CASES, |ctx: &mut TestCaseContext| {
-        // ケースごとに接続を作り直し、前のケースの状態を持ち越さない
+mod connect {
+    use shiguredo_rtmp::rtmp_connection::RtmpConnectionOptions;
+    use shiguredo_rtmp::rtmp_message_decoder::RtmpMessageDecoder;
+
+    use super::{
+        Amf0Value, AmfValue, CASES, ErrorKind, RtmpCommand, RtmpConnectCommand,
+        RtmpConnectionEvent, RtmpConnectionState, RtmpCreateStreamCommand, RtmpMessage,
+        RtmpMessageHeader, RtmpMessageStreamId, RtmpPlayCommand, RtmpPublishCommand,
+        RtmpServerConnection, RtmpTimestamp, RtmpUserControlEvent, SEED_ENV,
+        SetPeerBandwidthLimitType, TestCaseContext, TransactionId, clear_send_buf, drain_events,
+        encode_message, encode_message_on, perform_handshake, sample_small_string,
+        sample_transaction_id, send_command,
+    };
+
+    /// 初回の connect を待っているサーバーを作る
+    fn connecting_server() -> RtmpServerConnection {
         let mut server = RtmpServerConnection::new();
-        drain_events(&mut server);
-
-        // connect コマンドに載せる値をサンプリングする
-        let app = sample_small_string(ctx);
-        let flash_ver = sample_small_string(ctx);
-        let tc_url = sample_small_string(ctx);
-
         perform_handshake(&mut server);
         drain_events(&mut server);
-
-        let command = RtmpCommand::Connect(RtmpConnectCommand {
-            app,
-            flash_ver,
-            tc_url,
-        });
-        send_command(&mut server, command).expect("connect コマンドを処理できるはず");
-        let events = drain_events(&mut server);
-
-        assert!(
-            expect_state(&events, RtmpConnectionState::Connected),
-            "Connected 状態への遷移イベントが発火しなかった: {events:?}"
+        assert_eq!(
+            server.state(),
+            RtmpConnectionState::Connecting,
+            "ハンドシェイク後は初回の connect を待つはず"
         );
-        assert!(
-            !server.send_buf().is_empty(),
-            "connect コマンドへの応答が送信バッファに積まれていない"
-        );
+        server
+    }
+
+    /// 初回の connect は応答を従来の順序で送り、Connected に遷移する
+    #[test]
+    fn connect_flow() -> noprop::TestResult {
+        let seed = noprop::seed_from_env_or_time(SEED_ENV)?;
+        noprop::Runner::new(seed).run(CASES, |ctx: &mut TestCaseContext| {
+            let mut server = connecting_server();
+            let app = format!("live-{}", sample_small_string(ctx));
+            let command = RtmpCommand::Connect(RtmpConnectCommand {
+                tc_url: format!("rtmp://example.invalid/{app}"),
+                app,
+                flash_ver: sample_small_string(ctx),
+            });
+            let wire = encode_message(
+                command.into_message(RtmpMessageHeader::PCM)
+                    .expect("初回の connect をメッセージに変換できるはず"),
+            );
+            let split = noprop::sample_usize_in(ctx, 1..wire.len());
+            let (first, rest) = wire.split_at(split);
+            server.feed_recv_buf(first).expect("初回の connect の途中まで受理するはず");
+
+            // 受信途中で生成された ACK を送信してから、残りを受信する。
+            let mut decoder = RtmpMessageDecoder::default();
+            assert_eq!(
+                decode_responses(&mut decoder, server.send_buf()),
+                [RtmpMessage::Ack { header: RtmpMessageHeader::PCM, sequence_number: split as u32 }],
+                "初回接続の完了前は受信バイトに対する ACK だけを返すはず"
+            );
+            clear_send_buf(&mut server);
+            assert_eq!(server.state(), RtmpConnectionState::Connecting, "ACK を送っても初回の接続要求を待つはず");
+            assert_eq!(server.next_event(), None, "初回接続が完了する前に状態遷移を通知しないはず");
+
+            server.feed_recv_buf(rest).expect("残りの入力を受信して初回の connect を受理するはず");
+            assert_eq!(
+                server.state(),
+                RtmpConnectionState::Connected,
+                "初回の connect を受理すると接続済みになるはず"
+            );
+            assert_eq!(
+                drain_events(&mut server),
+                [RtmpConnectionEvent::StateChanged(
+                    RtmpConnectionState::Connected
+                )],
+                "初回の接続成功を 1 回だけ通知するはず"
+            );
+
+            let mut responses = decode_responses(&mut decoder, server.send_buf());
+            // 入力バイト数に応じた ACK は connect 自体の応答列から除く。
+            responses.retain(|message| !matches!(message, RtmpMessage::Ack { .. }));
+            // Adobe RTMP 仕様（2012 年 12 月版）7.1.7 節と 7.2.1.1 節の接続応答を検証する。
+            // Set Chunk Size を含める点と順序は本ライブラリの契約で、応答形式が変わる場合は見直す。
+            let options = RtmpConnectionOptions::default();
+            let [win_ack, chunk_size, bandwidth, begin, result] = responses.as_slice() else {
+                panic!("初回の connect への応答は 5 件のはず: {responses:?}");
+            };
+            assert_eq!(
+                [win_ack, chunk_size, bandwidth, begin],
+                [
+                    &RtmpMessage::win_ack_size(options.ack_window_size),
+                    &RtmpMessage::set_chunk_size(options.chunk_size),
+                    &RtmpMessage::SetPeerBandwidth {
+                        header: RtmpMessageHeader::PCM,
+                        size: options.ack_window_size,
+                        limit_type: SetPeerBandwidthLimitType::Hard,
+                    },
+                    &RtmpMessage::stream_begin(RtmpMessageStreamId::FIRST),
+                ],
+                "初回の connect に対する制御メッセージの内容と順序を維持するはず"
+            );
+            assert!(
+                matches!(result, RtmpMessage::Command {
+                    header, name, transaction_id, object: AmfValue::Amf0(Amf0Value::Object { .. }), args, ..
+                } if *header == RtmpMessageHeader::PCM
+                        && name == "_result"
+                        && *transaction_id == TransactionId::CONNECT
+                        && args.first().and_then(|info| info.expect_object_member("code").ok())
+                            .and_then(|code| code.expect_str().ok())
+                            == Some("NetConnection.Connect.Success")),
+                "最後に初回の connect に対応する成功応答を返すはず: {result:?}"
+            );
+            Ok(())
+        })?;
         Ok(())
-    })?;
-    Ok(())
+    }
+
+    /// 接続後の connect の拒否は、保存済みの情報と進行中の状態を変えない
+    #[test]
+    fn connect_is_rejected_after_connecting() -> noprop::TestResult {
+        let seed = noprop::seed_from_env_or_time(SEED_ENV)?;
+        noprop::Runner::new(seed).run(CASES, |ctx: &mut TestCaseContext| {
+            let suffix = sample_small_string(ctx);
+            let app = format!("initial-{suffix}");
+            let tc_url = format!("rtmp://example.invalid/{app}");
+            let [initial, replacement] = [
+                RtmpConnectCommand {
+                    app: app.clone(),
+                    flash_ver: sample_small_string(ctx),
+                    tc_url: tc_url.clone(),
+                },
+                // 初回とは異なる値にし、状態だけでなく保存情報の上書きも検出する。
+                RtmpConnectCommand {
+                    app: format!("other-{suffix}"),
+                    flash_ver: sample_small_string(ctx),
+                    tc_url: format!("rtmp://example.invalid/other-{suffix}"),
+                },
+            ]
+            .map(|command| {
+                RtmpCommand::Connect(command)
+                    .into_message(RtmpMessageHeader::PCM)
+                    .expect("接続要求をメッセージに変換できるはず")
+            });
+
+            // Adobe RTMP 仕様（2012 年 12 月版）7.2.1.1 節では connect の ID は 1。
+            // この必須値が変わる場合は、型変換エラーを検証するこの入力も見直す。
+            let mut invalid = replacement.clone();
+            let RtmpMessage::Command { transaction_id, .. } = &mut invalid else {
+                panic!("接続要求はコマンドメッセージのはず");
+            };
+            *transaction_id = sample_transaction_id(ctx);
+            let [initial, replacement, invalid] =
+                [initial, replacement, invalid].map(encode_message);
+            // クライアントからの ping にも応答する既存動作で、拒否の前後の処理順を確認する。
+            let millis = noprop::sample_u32(ctx);
+            let timestamp = RtmpTimestamp::from_millis(millis);
+            let next_timestamp = RtmpTimestamp::from_millis(millis ^ 1);
+            let ping = |timestamp| {
+                encode_protocol_message(RtmpMessage::UserControl {
+                    header: RtmpMessageHeader::PCM,
+                    event: RtmpUserControlEvent::PingRequest { timestamp },
+                })
+            };
+            let mut mixed = ping(timestamp);
+            mixed.extend_from_slice(&replacement);
+            mixed.extend(ping(next_timestamp));
+
+            // 配信と再生は別々の接続で検証する。
+            let transaction_id = sample_transaction_id(ctx);
+            let stream_name = sample_small_string(ctx);
+            let cases = [
+                (
+                    RtmpCommand::Publish(RtmpPublishCommand {
+                        transaction_id,
+                        stream_name: stream_name.clone(),
+                    }),
+                    RtmpConnectionEvent::PublishRequested {
+                        app: app.clone(),
+                        tc_url: tc_url.clone(),
+                        stream_name: stream_name.clone(),
+                    },
+                    RtmpConnectionState::PublishPending,
+                    RtmpConnectionState::Publishing,
+                ),
+                (
+                    RtmpCommand::Play(RtmpPlayCommand {
+                        transaction_id,
+                        stream_name: stream_name.clone(),
+                        start: -1.0,
+                    }),
+                    RtmpConnectionEvent::PlayRequested {
+                        app,
+                        tc_url,
+                        stream_name,
+                    },
+                    RtmpConnectionState::PlayPending,
+                    RtmpConnectionState::Playing,
+                ),
+            ];
+            for (command, requested, pending, active) in cases {
+                let mut server = connecting_server();
+                server
+                    .feed_recv_buf(&initial)
+                    .expect("初回の connect を受理するはず");
+                drain_events(&mut server);
+                let mut decoder = RtmpMessageDecoder::default();
+                decode_responses(&mut decoder, server.send_buf());
+                clear_send_buf(&mut server);
+
+                // 小さい ACK ウィンドウを先に適用し、次の受信で ACK が必要になるようにする。
+                let small_window =
+                    encode_protocol_message(RtmpMessage::win_ack_size(replacement.len() as u32));
+                server
+                    .feed_recv_buf(&small_window)
+                    .expect("ACK ウィンドウを受理するはず");
+                decode_responses(&mut decoder, server.send_buf());
+                clear_send_buf(&mut server);
+                let response = assert_connect_rejected(
+                    &mut server,
+                    RtmpConnectionState::Connected,
+                    ErrorKind::InvalidState,
+                    &mixed,
+                );
+                // ACK は全入力を数え、先行する ping の応答も残す。拒否した connect の応答はない。
+                let bytes = (initial.len() + small_window.len() + mixed.len()) as u32;
+                assert_eq!(
+                    decode_responses(&mut decoder, response),
+                    [
+                        RtmpMessage::Ack {
+                            header: RtmpMessageHeader::PCM,
+                            sequence_number: bytes
+                        },
+                        RtmpMessage::UserControl {
+                            header: RtmpMessageHeader::PCM,
+                            event: RtmpUserControlEvent::PingResponse { timestamp },
+                        }
+                    ],
+                    "connect の拒否時にも必要な ACK と先行する ping の応答を返すはず"
+                );
+                clear_send_buf(&mut server);
+                server
+                    .feed_recv_buf(&[])
+                    .expect("空入力で受信処理を再開できるはず");
+                assert_eq!(
+                    decode_responses(&mut decoder, server.send_buf()),
+                    [RtmpMessage::UserControl {
+                        header: RtmpMessageHeader::PCM,
+                        event: RtmpUserControlEvent::PingResponse {
+                            timestamp: next_timestamp
+                        },
+                    }],
+                    "入力を再投入せずに後続の ping だけを処理するはず"
+                );
+                clear_send_buf(&mut server);
+
+                // 残りは通常のウィンドウで、短い入力に ACK が増えない場合を確認する。
+                let normal_window = encode_protocol_message(RtmpMessage::win_ack_size(
+                    RtmpConnectionOptions::default().ack_window_size,
+                ));
+                server
+                    .feed_recv_buf(&normal_window)
+                    .expect("ACK ウィンドウを更新できるはず");
+                let response = assert_connect_rejected(
+                    &mut server,
+                    RtmpConnectionState::Connected,
+                    ErrorKind::InvalidData,
+                    &invalid,
+                );
+                assert!(
+                    response.is_empty(),
+                    "型変換エラーでは connect の応答を追加しないはず"
+                );
+
+                send_command(
+                    &mut server,
+                    RtmpCommand::CreateStream(RtmpCreateStreamCommand {
+                        transaction_id: TransactionId::NON_RESERVED_START,
+                    }),
+                )
+                .expect("拒否後もストリームを作成できるはず");
+                drain_events(&mut server);
+                clear_send_buf(&mut server);
+                let message = command
+                    .into_message(RtmpMessageHeader {
+                        stream_id: RtmpMessageStreamId::MEDIA,
+                        timestamp: RtmpTimestamp::ZERO,
+                    })
+                    .expect("配信・再生要求を変換できるはず");
+                server
+                    .feed_recv_buf(&encode_message(message))
+                    .expect("配信・再生要求を処理できるはず");
+                assert_eq!(
+                    drain_events(&mut server),
+                    [RtmpConnectionEvent::StateChanged(pending), requested],
+                    "拒否後の配信・再生要求には初回の接続情報を使うはず"
+                );
+                server.accept().expect("配信・再生要求を受理できるはず");
+                drain_events(&mut server);
+                // 受理済みの要求への応答が送信待ちでも、その内容を変えないことを確認する。
+                assert!(
+                    !server.send_buf().is_empty(),
+                    "受理済みの要求には送信待ちの応答があるはず"
+                );
+                let response = assert_connect_rejected(
+                    &mut server,
+                    active,
+                    ErrorKind::InvalidState,
+                    &replacement,
+                );
+                assert!(
+                    response.is_empty(),
+                    "配信中・再生中の拒否では応答を追加しないはず"
+                );
+            }
+            Ok(())
+        })?;
+        Ok(())
+    }
+
+    /// 接続拒否時の状態とイベントを検証し、その呼び出しで追加した送信データだけを返す
+    #[track_caller]
+    fn assert_connect_rejected<'a>(
+        server: &'a mut RtmpServerConnection,
+        state: RtmpConnectionState,
+        kind: ErrorKind,
+        buf: &[u8],
+    ) -> &'a [u8] {
+        assert_eq!(
+            server.state(),
+            state,
+            "connect を拒否する状態になっているはず"
+        );
+        let send_before = server.send_buf().to_vec();
+        let error = server
+            .feed_recv_buf(buf)
+            .expect_err("接続済みなら connect を拒否するはず");
+        assert_eq!(error.kind, kind, "connect を拒否した理由を区別するはず");
+        assert_eq!(
+            server.state(),
+            state,
+            "拒否してもサーバーの状態を維持するはず"
+        );
+        assert_eq!(
+            server.next_event(),
+            None,
+            "拒否した connect ではイベントを追加しないはず"
+        );
+        server
+            .send_buf()
+            .strip_prefix(send_before.as_slice())
+            .expect("拒否前に送信待ちだった応答を維持するはず")
+    }
+
+    /// 制御メッセージを 1 件ずつ既存の履歴に依存しない形式で書き出す
+    fn encode_protocol_message(message: RtmpMessage) -> Vec<u8> {
+        // Adobe RTMP 仕様（2012 年 12 月版）5.4 節と 6.2 節の制御用 CSID を使う。
+        // 制御用ストリームの割り当てが変わる場合は見直す。
+        encode_message_on(2, message)
+    }
+
+    /// 圧縮履歴を維持したまま送信バッファのメッセージを読み取る
+    fn decode_responses(decoder: &mut RtmpMessageDecoder, buf: &[u8]) -> Vec<RtmpMessage> {
+        decoder.feed_buf(buf);
+        let mut messages = Vec::new();
+        while let Some(message) = decoder
+            .decode()
+            .expect("サーバーの応答をデコードできるはず")
+        {
+            messages.push(message);
+        }
+        messages
+    }
 }
 
 /// CreateStream で MediaStreamCreated に遷移することを検証する

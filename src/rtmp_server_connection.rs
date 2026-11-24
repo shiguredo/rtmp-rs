@@ -60,12 +60,24 @@ impl RtmpServerConnection {
     }
 
     /// クライアントから受信したデータを処理する
+    ///
+    /// # エラー
+    ///
+    /// `connect` は [`RtmpConnectionState::Connecting`] のときだけ受理する。
+    /// それ以外の状態で解釈できた `connect` は [`crate::error::ErrorKind::InvalidState`] を返す。
+    /// この場合、その要求に対する応答や状態遷移は行わない。
+    /// 受信バイトに対する ACK や、それまでに処理したメッセージの結果は取り消さない。
+    /// 接続を切断するかどうかは呼び出し側が判断する。継続する場合は同じ入力を再投入しないこと。
+    /// 後続のデコード済みメッセージはキューに残る。追加入力なしで処理を再開するには空スライスを渡す。
     pub fn feed_recv_buf(&mut self, buf: &[u8]) -> Result<(), Error> {
         let feed_result = if self.state == RtmpConnectionState::Handshaking {
             self.handshake.feed_recv_buf(buf)?;
             if !self.handshake.is_recv_complete() {
                 return Ok(());
             }
+            // 初回の connect が揃う前にも ACK などを送るため、未 ACK バイトの上限を先に設定する。
+            self.message_channel
+                .set_local_ack_window_size(self.options.ack_window_size);
             self.change_state(RtmpConnectionState::Connecting);
             let remaining_recv_buf = self.handshake.take_recv_buf();
             self.message_channel.feed_recv_buf(&remaining_recv_buf)?
@@ -263,9 +275,15 @@ impl RtmpServerConnection {
     }
 
     fn handle_connect_command(&mut self, command: RtmpConnectCommand) -> Result<(), Error> {
+        // 初回の接続要求だけを受理し、保存済みの接続情報と進行中の状態を維持する。
+        // Adobe RTMP 仕様（2012 年 12 月版）7.2.1.1 節は connect を接続要求として定義する。
+        // 状態制限はこの実装の契約であり、仕様で再接続の手順が変わる場合は見直す。
+        self.state.expect(RtmpConnectionState::Connecting)?;
+
         // こちらから送信するデータに対する（相手からの） ACK の間隔を指定する
         self.message_channel
             .feed_send_message(RtmpMessage::win_ack_size(self.options.ack_window_size))?;
+        // 先に帯域通知を受けていた場合も、ここで通知したウィンドウに合わせる。
         self.message_channel
             .set_local_ack_window_size(self.options.ack_window_size);
 
@@ -285,7 +303,7 @@ impl RtmpServerConnection {
         self.message_channel
             .feed_send_message(RtmpMessage::stream_begin(RtmpMessageStreamId::FIRST))?;
 
-        // Connect は常に受理する（必要なら Publish / Play コマンドのタイミングで拒否する）
+        // 初回の接続は受理する。配信や再生の許可は対応する要求を受けたときに判断する。
         self.message_channel.feed_send_message(command.accept()?)?;
         self.change_state(RtmpConnectionState::Connected);
         self.connect_command = Some(command);

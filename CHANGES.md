@@ -47,6 +47,9 @@
 - [FIX] Shared Object と Aggregate の型 ID を受理し、本文を読み飛ばして `MessageIgnored` を通知する
   - @voluntas
 
+- [FIX] サーバーは初回の `connect` だけを受理し、分割受信中の ACK 送信で切断状態にならないようにする
+  - @voluntas
+
 ### misc
 
 - [UPDATE] PBT を proptest から noprop に移行する
