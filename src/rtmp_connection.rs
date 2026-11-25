@@ -264,20 +264,19 @@ impl RtmpMessageChannel {
             self.received_messages.push_back(message);
         }
 
-        // ACK を送る必要があるなら送るように呼び出し元に指示する
-        //
-        // 念のために peer_ack_window_size の半分を超過したら送るようにする
-        //
-        // 仕様的には peer_ack_window_size 分だけ受信したら送れば十分そうだけど、
-        // RTMP は仕様が不明瞭なところがあり、クライアントが厳密にそれに準拠している保証もないため、
-        // 安全側に倒して、早めに送信するようにしている
-        // （この部分のオーバーヘッドもほぼ無視できる範囲のため）
+        Ok(self.take_pending_ack())
+    }
+
+    fn take_pending_ack(&mut self) -> Option<u32> {
+        // Adobe RTMP 仕様（2012 年 12 月版）5.4.3 節と 5.4.4 節はウィンドウ分の受信後に
+        // ACK を送ることを求めるが、受信側の計数起点や相手の厳密な準拠は保証されないため、
+        // 安全側に倒して半分を超えた時点で返す。この方針が変わった場合は閾値を見直す。
         let unacked_bytes = self.total_bytes_received.wrapping_sub(self.last_ack_sent);
         if unacked_bytes > self.peer_ack_window_size / 2 {
             self.last_ack_sent = self.total_bytes_received;
-            Ok(Some(self.total_bytes_received))
+            Some(self.total_bytes_received)
         } else {
-            Ok(None)
+            None
         }
     }
 
@@ -332,8 +331,29 @@ impl RtmpMessageChannel {
     ///
     /// 受信時に、このサイズの半分を超える未 ACK バイトが発生すると
     /// [`Self::feed_recv_buf()`] が ACK を送信するための値を返す。
+    /// このメソッドはウィンドウの設定だけを行う。設定した時点で未 ACK バイトが
+    /// 新しいウィンドウの半分を超えていても、ACK の要否は次の
+    /// [`Self::feed_recv_buf()`] で判定する。
+    /// 組み込みのクライアント接続とサーバー接続は、`WinAckSize` の受信処理の中で
+    /// この設定と ACK の要否の再判定をまとめて行う。
     pub fn set_peer_ack_window_size(&mut self, size: u32) {
         self.peer_ack_window_size = size;
+    }
+
+    /// 通知された ACK ウィンドウを適用し、必要なら ACK を送信バッファへ積む
+    ///
+    /// 適用した時点の未 ACK バイト数で ACK の要否を再判定し、必要なら送信バッファの
+    /// 末尾に ACK を追加する。ACK は制御ストリームの固定長メッセージであり、
+    /// 追加に失敗する経路は想定していないが、失敗した場合はそのエラーを返す。
+    pub(crate) fn handle_win_ack_size(&mut self, size: u32) -> Result<(), Error> {
+        // Adobe RTMP 仕様（2012 年 12 月版）5.4 節と 5.4.4 節に従い、通知された窓を
+        // 受信時に適用する。すでに到達していれば、相手が ACK 待ちで止まる前に応答を積む。
+        // ウィンドウの適用時期に関する規定が変わった場合は見直す。
+        self.set_peer_ack_window_size(size);
+        if let Some(sequence_number) = self.take_pending_ack() {
+            self.feed_send_message(RtmpMessage::ack(sequence_number))?;
+        }
+        Ok(())
     }
 }
 
