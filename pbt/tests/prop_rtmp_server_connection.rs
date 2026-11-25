@@ -12,7 +12,9 @@ use shiguredo_rtmp::rtmp_command::{
     RtmpCommand, RtmpConnectCommand, RtmpCreateStreamCommand, RtmpGetStreamLengthCommand,
     RtmpPlayCommand, RtmpPublishCommand, TransactionId,
 };
-use shiguredo_rtmp::rtmp_connection::{RtmpConnectionEvent, RtmpConnectionState};
+use shiguredo_rtmp::rtmp_connection::{
+    RtmpConnectionEvent, RtmpConnectionOptions, RtmpConnectionState, RtmpMessageChannel,
+};
 use shiguredo_rtmp::rtmp_handshake::RtmpClientHandshake;
 use shiguredo_rtmp::rtmp_message::{
     RtmpMessage, RtmpMessageHeader, RtmpMessageStreamId, SetPeerBandwidthLimitType,
@@ -1001,6 +1003,125 @@ fn send_media_in_playing() -> noprop::TestResult {
             server.send_buf().len() > pending.len(),
             "有効な映像が送信バッファに追加されるはず"
         );
+        Ok(())
+    })?;
+    Ok(())
+}
+
+/// 再生を提供するサーバーは ACK の有無や値で切断せず、受信した値をそのまま通知する
+#[test]
+fn playing_server_keeps_sending_regardless_of_received_acks() -> noprop::TestResult {
+    let seed = noprop::seed_from_env_or_time(SEED_ENV)?;
+    noprop::Runner::new(seed).run(CASES, |ctx: &mut TestCaseContext| {
+        let bandwidth = noprop::sample_u32_in(ctx, 1..=64);
+        let old_threshold = 2 * bandwidth as usize;
+        let mut frame = sample_audio_frame(ctx);
+        // 初期応答の送信量に頼らず、音声 1 件だけで以前の未確認バイト数の上限を越える。
+        frame
+            .data
+            .resize(frame.data.len().max(old_threshold + 1), 0);
+
+        // 2 GiB 付近から小さい値への後退、重複、最上位ビットが立つ値を毎回含める。
+        let before_wrap = noprop::sample_u32_in(ctx, 0x7fff_f000..=0x7fff_ffff);
+        let after_wrap = noprop::sample_u32_in(ctx, 0..=0xffff);
+        let high_bit = noprop::sample_u32_in(ctx, 0x8000_0000..=u32::MAX);
+        let acks = [before_wrap, after_wrap, after_wrap, high_bit];
+
+        let audio = RtmpMessage::Audio {
+            header: RtmpMessageHeader {
+                stream_id: RtmpMessageStreamId::MEDIA,
+                timestamp: frame.timestamp,
+            },
+            frame: frame.clone(),
+        };
+        let first_messages = [
+            RtmpMessage::win_ack_size(RtmpConnectionOptions::default().ack_window_size),
+            audio.clone(),
+        ];
+
+        // ACK が一度も来ない接続と、順不同の ACK が来る接続を個別に検証する。
+        for sequence_numbers in [&[][..], acks.as_slice()] {
+            let mut server = RtmpServerConnection::new();
+            perform_handshake(&mut server);
+            let mut transaction_id = TransactionId::NON_RESERVED_START;
+            connect_and_create_stream(
+                &mut server,
+                "live".to_owned(),
+                "FMLE/3.0".to_owned(),
+                "rtmp://example.invalid/live".to_owned(),
+                transaction_id,
+            );
+            transaction_id.increment();
+            let play = RtmpCommand::Play(RtmpPlayCommand {
+                transaction_id,
+                stream_name: "stream".to_owned(),
+                start: -1.0,
+            });
+            send_command(&mut server, play).expect("play を処理できるはず");
+            server.accept().expect("play を受理できるはず");
+            drain_events(&mut server);
+
+            let mut peer = RtmpMessageChannel::default();
+            // 初期の送信分もデコードして、チャンクの圧縮履歴を保持する。
+            peer.feed_recv_buf(server.send_buf())
+                .expect("初期の送信メッセージをデコードできるはず");
+            while peer.next_recv_message().is_some() {}
+            clear_send_buf(&mut server);
+
+            peer.feed_send_message(RtmpMessage::set_peer_bandwidth(bandwidth))
+                .expect("帯域通知をエンコードできるはず");
+            for &sequence_number in sequence_numbers {
+                peer.feed_send_message(RtmpMessage::ack(sequence_number))
+                    .expect("ACK をエンコードできるはず");
+            }
+            server
+                .feed_recv_buf(peer.send_buf())
+                .expect("帯域通知と ACK を受理できるはず");
+
+            // 閾値を越えた後も次の音声を送信でき、帯域通知への応答は初回だけに含まれる。
+            for expected in [first_messages.as_slice(), std::slice::from_ref(&audio)] {
+                let pending = server.send_buf().len();
+                server
+                    .send_audio(frame.clone())
+                    .expect("音声を送信できるはず");
+                let wire = server.send_buf();
+                assert!(
+                    wire.len() > pending + old_threshold,
+                    "音声の追加分だけで以前の上限を越えるはず"
+                );
+                peer.feed_recv_buf(wire)
+                    .expect("送信したメッセージをデコードできるはず");
+                server.advance_send_buf(wire.len());
+                assert!(
+                    server.send_buf().is_empty(),
+                    "送信済みのバイト列は残らないはず"
+                );
+                assert_eq!(
+                    server.state(),
+                    RtmpConnectionState::Playing,
+                    "ACK が {sequence_numbers:?} でも再生を継続するはず"
+                );
+
+                // 受信バイト数に応じて送る ACK とは別に、帯域通知への応答と音声を検証する。
+                let messages: Vec<_> = std::iter::from_fn(|| peer.next_recv_message())
+                    .filter(|message| !matches!(message, RtmpMessage::Ack { .. }))
+                    .collect();
+                assert_eq!(
+                    messages, expected,
+                    "帯域通知への応答と送信した音声が一致するはず"
+                );
+            }
+
+            let expected: Vec<_> = sequence_numbers
+                .iter()
+                .map(|&sequence_number| RtmpConnectionEvent::AckReceived { sequence_number })
+                .collect();
+            assert_eq!(
+                drain_events(&mut server),
+                expected,
+                "ACK を受信順に生の値で通知し、ほかのイベントを追加しないはず"
+            );
+        }
         Ok(())
     })?;
     Ok(())

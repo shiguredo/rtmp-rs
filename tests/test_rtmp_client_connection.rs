@@ -106,8 +106,9 @@ mod play {
     ) {
         let mut iterations = 0;
         while iterations < max_iterations {
-            while let Some(RtmpConnectionEvent::StateChanged(state)) = connection.next_event() {
-                if state == target_state {
+            // ACK などの通知が途中にあっても、キューにある状態遷移を取りこぼさない。
+            while let Some(event) = connection.next_event() {
+                if event == RtmpConnectionEvent::StateChanged(target_state) {
                     return;
                 }
             }
@@ -323,8 +324,9 @@ mod publish {
     ) {
         let mut iterations = 0;
         while iterations < max_iterations {
-            while let Some(RtmpConnectionEvent::StateChanged(state)) = connection.next_event() {
-                if state == target_state {
+            // ACK などの通知が途中にあっても、キューにある状態遷移を取りこぼさない。
+            while let Some(event) = connection.next_event() {
+                if event == RtmpConnectionEvent::StateChanged(target_state) {
                     return;
                 }
             }

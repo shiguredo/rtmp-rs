@@ -10,7 +10,7 @@ use crate::rtmp_command::{RtmpCommand, RtmpConnectCommand, RtmpResultCommand, Tr
 use crate::rtmp_connection::{
     RtmpConnectionEvent, RtmpConnectionOptions, RtmpConnectionState, RtmpMessageChannel,
 };
-use crate::rtmp_handshake::{HANDSHAKE_BYTES, RtmpClientHandshake};
+use crate::rtmp_handshake::RtmpClientHandshake;
 use crate::rtmp_message::{RtmpMessage, RtmpMessageHeader, RtmpMessageStreamId};
 use crate::rtmp_message_decoder::ReceivedMessage;
 use crate::rtmp_timestamp::RtmpTimestamp;
@@ -246,8 +246,6 @@ impl RtmpClientConnection {
         // こちらから送信するデータに対する（相手からの） ACK の間隔を指定する
         let message = RtmpMessage::win_ack_size(self.options.ack_window_size);
         self.message_channel.feed_send_message(message)?;
-        self.message_channel
-            .set_local_ack_window_size(self.options.ack_window_size);
 
         // 相手から送信してくるデータに対する（こちらからの） ACK の間隔の要望（ヒント）を指定する
         //
@@ -337,18 +335,14 @@ impl RtmpClientConnection {
             RtmpMessage::Ack {
                 sequence_number, ..
             } => {
-                // C2 の送信完了前に届いた ACK は、送信待ちのチャンクを確認するものではない。
-                if self.handshake.is_send_complete() {
-                    self.message_channel.notify_ack_received(sequence_number);
-                }
+                self.event_queue
+                    .push_back(RtmpConnectionEvent::AckReceived { sequence_number });
                 Ok(())
             }
-            RtmpMessage::SetPeerBandwidth { size, .. } => {
-                // 相手に win ack size を返送する（いったん limit_type は考慮しない）
+            RtmpMessage::SetPeerBandwidth { .. } => {
+                // ウィンドウサイズは応答するが、受信 ACK から未確認送信量を推定して制限しない。
                 let message = RtmpMessage::win_ack_size(self.options.ack_window_size);
-                self.message_channel.feed_send_message(message)?;
-                self.message_channel.set_local_ack_window_size(size);
-                Ok(())
+                self.message_channel.feed_send_message(message)
             }
             RtmpMessage::UserControl {
                 event: RtmpUserControlEvent::PingRequest { timestamp },
@@ -486,22 +480,8 @@ impl RtmpClientConnection {
     fn advance_send_buf(&mut self, n: usize) {
         if !self.handshake.is_send_complete() {
             self.handshake.advance_send_buf(n);
-            if self.handshake.is_send_complete() {
-                self.message_channel
-                    .set_handshake_bytes_sent(HANDSHAKE_BYTES);
-            }
-        } else if !self.message_channel.advance_send_buf(n) {
-            // 相手から ACK が期待通りに届いていないので切断する
-            self.event_queue
-                .push_back(RtmpConnectionEvent::DisconnectedByPeer {
-                    reason: "ACK not received within expected interval".to_owned(),
-                });
-
-            // [補足]
-            // Disconnecting への遷移は常に成功するので、ここでは expect() を使ってしまう。
-            // 利用側の利便性を考えると、返り値を不必要に Result にしたくないため。
-            self.change_state(RtmpConnectionState::Disconnecting)
-                .expect("transition to disconnecting always succeeds (implementation bug)");
+        } else {
+            self.message_channel.advance_send_buf(n);
         }
     }
 
