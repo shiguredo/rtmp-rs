@@ -182,9 +182,20 @@ fn message_channel_send_roundtrip() -> noprop::TestResult {
                 .expect("生成した RTMP メッセージを送信バッファに追加できるはず");
         }
 
+        // 一部ずつ送信済みにしても、未送信部分を欠落・重複させずに取り出せるはず。
         let buf = channel.send_buf().to_vec();
+        let split = noprop::sample_usize_in(ctx, 1..buf.len());
         let mut decoder = RtmpMessageDecoder::default();
-        decoder.feed_buf(&buf);
+        decoder.feed_buf(&channel.send_buf()[..split]);
+        channel.advance_send_buf(split);
+        assert_eq!(
+            channel.send_buf(),
+            &buf[split..],
+            "未送信部分だけが残るはず"
+        );
+        decoder.feed_buf(channel.send_buf());
+        channel.advance_send_buf(buf.len() - split);
+        assert!(channel.send_buf().is_empty(), "すべて送信済みのはず");
 
         let mut decoded = Vec::new();
         while let Some(message) = decoder
@@ -408,85 +419,6 @@ fn message_channel_recv_ack_threshold() -> noprop::TestResult {
             last_ack_sent <= total_received,
             "最終 ACK の値が受信バイト数を超えている"
         );
-        Ok(())
-    })?;
-    Ok(())
-}
-
-/// ACK が届かない場合に advance_send_buf が false を返すことを検証する
-#[test]
-fn message_channel_send_ack_timeout() -> noprop::TestResult {
-    let seed = noprop::seed_from_env_or_time(SEED_ENV)?;
-    noprop::Runner::new(seed).run(CASES, |ctx: &mut TestCaseContext| {
-        let messages = sample_messages(ctx, 1..10);
-        let local_ack_window_size = noprop::sample_u32_in(ctx, 1..=1000);
-
-        let mut channel = RtmpMessageChannel::default();
-        channel.set_local_ack_window_size(local_ack_window_size);
-
-        for message in &messages {
-            channel
-                .feed_send_message(message.clone())
-                .expect("生成した RTMP メッセージを送信バッファに追加できるはず");
-        }
-
-        let total_buf_len = channel.send_buf().len() as u32;
-        let threshold = local_ack_window_size * 2;
-
-        // バッファが閾値以下の場合はこのケースをスキップする
-        if total_buf_len <= threshold {
-            return Ok(());
-        }
-
-        // 閾値を超えるまでは true を返す
-        let bytes_to_send = (threshold + 1) as usize;
-        let result = channel.advance_send_buf(bytes_to_send);
-
-        // ACK を受信していないので false が返る
-        assert!(
-            !result,
-            "ACK を受信していない場合は advance_send_buf が false を返す"
-        );
-        Ok(())
-    })?;
-    Ok(())
-}
-
-/// ACK を受信すると advance_send_buf が true を返し続けることを検証する
-#[test]
-fn message_channel_send_with_ack() -> noprop::TestResult {
-    let seed = noprop::seed_from_env_or_time(SEED_ENV)?;
-    noprop::Runner::new(seed).run(CASES, |ctx: &mut TestCaseContext| {
-        let messages = sample_messages(ctx, 1..10);
-        let local_ack_window_size = noprop::sample_u32_in(ctx, 100..=1000);
-
-        let mut channel = RtmpMessageChannel::default();
-        channel.set_local_ack_window_size(local_ack_window_size);
-
-        for message in &messages {
-            channel
-                .feed_send_message(message.clone())
-                .expect("生成した RTMP メッセージを送信バッファに追加できるはず");
-        }
-
-        let total_buf_len = channel.send_buf().len();
-
-        // 小さなチャンクで送信し、適宜 ACK を通知する
-        let chunk_size = 50usize;
-        let mut bytes_sent: u32 = 0;
-        let mut offset = 0usize;
-
-        while offset < total_buf_len {
-            let to_advance = chunk_size.min(total_buf_len - offset);
-            let result = channel.advance_send_buf(to_advance);
-            assert!(result, "ACK を受信済みなら advance_send_buf は true を返す");
-
-            bytes_sent += to_advance as u32;
-            offset += to_advance;
-
-            // ACK を通知して unacked_bytes をリセットする
-            channel.notify_ack_received(bytes_sent);
-        }
         Ok(())
     })?;
     Ok(())

@@ -10,7 +10,7 @@ use crate::rtmp_command::{RtmpCommand, RtmpConnectCommand, RtmpResultCommand, Tr
 use crate::rtmp_connection::{
     RtmpConnectionEvent, RtmpConnectionOptions, RtmpConnectionState, RtmpMessageChannel,
 };
-use crate::rtmp_handshake::{HANDSHAKE_BYTES, RtmpClientHandshake};
+use crate::rtmp_handshake::RtmpClientHandshake;
 use crate::rtmp_message::{RtmpMessage, RtmpMessageHeader, RtmpMessageStreamId};
 use crate::rtmp_message_decoder::ReceivedMessage;
 use crate::rtmp_timestamp::RtmpTimestamp;
@@ -57,7 +57,9 @@ impl RtmpPublishClientConnection {
         self.inner.send_buf()
     }
 
-    /// 送信バッファから指定バイト数を送信済みとしてマークする
+    /// 送信済みのバイトを送信バッファから消費する。
+    ///
+    /// `n` には [`Self::send_buf()`] の先頭から実際に送信できたバイト数を指定する。
     pub fn advance_send_buf(&mut self, n: usize) {
         self.inner.advance_send_buf(n)
     }
@@ -102,7 +104,9 @@ impl RtmpPublishClientConnection {
         self.inner.message_channel.feed_send_message(message)
     }
 
-    /// 次のイベントを取得する
+    /// 次のイベントをキューから取り出す。キューが空なら `None` を返す。
+    ///
+    /// 受信処理後は `None` になるまで呼び出す。診断に使わない ACK 通知は取り出して破棄してよい。
     pub fn next_event(&mut self) -> Option<RtmpConnectionEvent> {
         self.inner.next_event()
     }
@@ -166,7 +170,9 @@ impl RtmpPlayClientConnection {
         self.inner.send_buf()
     }
 
-    /// 送信バッファから指定バイト数を送信済みとしてマークする
+    /// 送信済みのバイトを送信バッファから消費する。
+    ///
+    /// `n` には [`Self::send_buf()`] の先頭から実際に送信できたバイト数を指定する。
     pub fn advance_send_buf(&mut self, n: usize) {
         self.inner.advance_send_buf(n)
     }
@@ -176,7 +182,9 @@ impl RtmpPlayClientConnection {
         self.inner.state
     }
 
-    /// 次のイベントを取得する
+    /// 次のイベントをキューから取り出す。キューが空なら `None` を返す。
+    ///
+    /// 受信処理後は `None` になるまで呼び出す。診断に使わない ACK 通知は取り出して破棄してよい。
     pub fn next_event(&mut self) -> Option<RtmpConnectionEvent> {
         self.inner.next_event()
     }
@@ -246,8 +254,6 @@ impl RtmpClientConnection {
         // こちらから送信するデータに対する（相手からの） ACK の間隔を指定する
         let message = RtmpMessage::win_ack_size(self.options.ack_window_size);
         self.message_channel.feed_send_message(message)?;
-        self.message_channel
-            .set_local_ack_window_size(self.options.ack_window_size);
 
         // 相手から送信してくるデータに対する（こちらからの） ACK の間隔の要望（ヒント）を指定する
         //
@@ -337,18 +343,16 @@ impl RtmpClientConnection {
             RtmpMessage::Ack {
                 sequence_number, ..
             } => {
-                // C2 の送信完了前に届いた ACK は、送信待ちのチャンクを確認するものではない。
-                if self.handshake.is_send_complete() {
-                    self.message_channel.notify_ack_received(sequence_number);
-                }
+                self.event_queue
+                    .push_back(RtmpConnectionEvent::AckReceived { sequence_number });
                 Ok(())
             }
-            RtmpMessage::SetPeerBandwidth { size, .. } => {
-                // 相手に win ack size を返送する（いったん limit_type は考慮しない）
+            RtmpMessage::SetPeerBandwidth { .. } => {
+                // Adobe RTMP 仕様（2012 年 12 月版）5.4.5 節は Hard / Soft の送信制限を推奨する。
+                // 計数起点や折り返しの違いで正常な送信を止めないよう、未確認送信量を推定して制限しない。
+                // 受信 ACK から未確認量を一意に求める方法が仕様で明確になった場合は見直す。
                 let message = RtmpMessage::win_ack_size(self.options.ack_window_size);
-                self.message_channel.feed_send_message(message)?;
-                self.message_channel.set_local_ack_window_size(size);
-                Ok(())
+                self.message_channel.feed_send_message(message)
             }
             RtmpMessage::UserControl {
                 event: RtmpUserControlEvent::PingRequest { timestamp },
@@ -486,22 +490,8 @@ impl RtmpClientConnection {
     fn advance_send_buf(&mut self, n: usize) {
         if !self.handshake.is_send_complete() {
             self.handshake.advance_send_buf(n);
-            if self.handshake.is_send_complete() {
-                self.message_channel
-                    .set_handshake_bytes_sent(HANDSHAKE_BYTES);
-            }
-        } else if !self.message_channel.advance_send_buf(n) {
-            // 相手から ACK が期待通りに届いていないので切断する
-            self.event_queue
-                .push_back(RtmpConnectionEvent::DisconnectedByPeer {
-                    reason: "ACK not received within expected interval".to_owned(),
-                });
-
-            // [補足]
-            // Disconnecting への遷移は常に成功するので、ここでは expect() を使ってしまう。
-            // 利用側の利便性を考えると、返り値を不必要に Result にしたくないため。
-            self.change_state(RtmpConnectionState::Disconnecting)
-                .expect("transition to disconnecting always succeeds (implementation bug)");
+        } else {
+            self.message_channel.advance_send_buf(n);
         }
     }
 

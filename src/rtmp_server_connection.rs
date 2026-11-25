@@ -1,6 +1,5 @@
 //! RTMP サーバー接続の状態遷移を提供するモジュール
 
-use alloc::borrow::ToOwned;
 use alloc::collections::VecDeque;
 
 use crate::error::Error;
@@ -12,7 +11,7 @@ use crate::rtmp_command::{
 use crate::rtmp_connection::{
     RtmpConnectionEvent, RtmpConnectionOptions, RtmpConnectionState, RtmpMessageChannel,
 };
-use crate::rtmp_handshake::{HANDSHAKE_BYTES, RtmpServerHandshake};
+use crate::rtmp_handshake::RtmpServerHandshake;
 use crate::rtmp_message::{RtmpMessage, RtmpMessageHeader, RtmpMessageStreamId};
 use crate::rtmp_message_decoder::ReceivedMessage;
 use crate::rtmp_timestamp::RtmpTimestamp;
@@ -75,9 +74,6 @@ impl RtmpServerConnection {
             if !self.handshake.is_recv_complete() {
                 return Ok(());
             }
-            // 初回の connect が揃う前にも ACK などを送るため、未 ACK バイトの上限を先に設定する。
-            self.message_channel
-                .set_local_ack_window_size(self.options.ack_window_size);
             self.change_state(RtmpConnectionState::Connecting);
             let remaining_recv_buf = self.handshake.take_recv_buf();
             self.message_channel.feed_recv_buf(&remaining_recv_buf)?
@@ -136,19 +132,18 @@ impl RtmpServerConnection {
             RtmpMessage::Ack {
                 sequence_number, ..
             } => {
-                // ハンドシェイクの送信完了前は、送信待ちのチャンクを確認済みにしない。
-                if self.handshake.is_send_complete() {
-                    self.message_channel.notify_ack_received(sequence_number);
-                }
+                self.event_queue
+                    .push_back(RtmpConnectionEvent::AckReceived { sequence_number });
             }
             RtmpMessage::SetChunkSize { .. } => {
                 // message decoder のレイヤーでハンドリングされるのでここでは何もしなくていい
             }
-            RtmpMessage::SetPeerBandwidth { size, .. } => {
-                // 相手に win ack size を返送する（いったん limit_type は考慮しない）
+            RtmpMessage::SetPeerBandwidth { .. } => {
+                // Adobe RTMP 仕様（2012 年 12 月版）5.4.5 節は Hard / Soft の送信制限を推奨する。
+                // 計数起点や折り返しの違いで正常な送信を止めないよう、未確認送信量を推定して制限しない。
+                // 受信 ACK から未確認量を一意に求める方法が仕様で明確になった場合は見直す。
                 let message = RtmpMessage::win_ack_size(self.options.ack_window_size);
                 self.message_channel.feed_send_message(message)?;
-                self.message_channel.set_local_ack_window_size(size);
             }
             RtmpMessage::UserControl {
                 event: RtmpUserControlEvent::SetBufferLength { .. },
@@ -283,9 +278,6 @@ impl RtmpServerConnection {
         // こちらから送信するデータに対する（相手からの） ACK の間隔を指定する
         self.message_channel
             .feed_send_message(RtmpMessage::win_ack_size(self.options.ack_window_size))?;
-        // 先に帯域通知を受けていた場合も、ここで通知したウィンドウに合わせる。
-        self.message_channel
-            .set_local_ack_window_size(self.options.ack_window_size);
 
         // SetChunkSize を送信する
         self.message_channel
@@ -325,22 +317,14 @@ impl RtmpServerConnection {
         }
     }
 
-    /// 送信バッファから指定バイト数を送信済みとしてマークする
+    /// 送信済みのバイトを送信バッファから消費する。
+    ///
+    /// `n` には [`Self::send_buf()`] の先頭から実際に送信できたバイト数を指定する。
     pub fn advance_send_buf(&mut self, n: usize) {
         if !self.handshake.is_send_complete() {
-            let had_pending_bytes = !self.handshake.send_buf().is_empty();
             self.handshake.advance_send_buf(n);
-            if had_pending_bytes && self.handshake.has_sent_handshake_bytes() {
-                self.message_channel
-                    .set_handshake_bytes_sent(HANDSHAKE_BYTES);
-            }
-        } else if !self.message_channel.advance_send_buf(n) {
-            // 相手から ACK が期待通りに届いていないので切断する
-            self.event_queue
-                .push_back(RtmpConnectionEvent::DisconnectedByPeer {
-                    reason: "ACK not received within expected interval".to_owned(),
-                });
-            self.change_state(RtmpConnectionState::Disconnecting);
+        } else {
+            self.message_channel.advance_send_buf(n);
         }
     }
 
@@ -501,12 +485,9 @@ impl RtmpServerConnection {
         self.message_channel.feed_send_message(message)
     }
 
-    /// 次のイベントを取得する
+    /// 次のイベントをキューから取り出す。キューが空なら `None` を返す。
     ///
-    /// 接続状態の変化やクライアントからのリクエストなど、
-    /// 処理すべきイベントがある場合はそれを返す
-    ///
-    /// イベントがない場合は `None` を返す
+    /// 受信処理後は `None` になるまで呼び出す。診断に使わない ACK 通知は取り出して破棄してよい。
     pub fn next_event(&mut self) -> Option<RtmpConnectionEvent> {
         self.event_queue.pop_front()
     }

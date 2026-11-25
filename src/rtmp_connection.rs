@@ -2,7 +2,7 @@
 //! ACK の形式とウィンドウは Adobe RTMP 仕様（2012 年 12 月版）5.4.3 節と 5.4.4 節を参照する。
 
 use alloc::borrow::ToOwned;
-use alloc::collections::{BTreeMap, VecDeque};
+use alloc::collections::VecDeque;
 use alloc::string::String;
 use core::fmt;
 
@@ -24,7 +24,10 @@ pub struct RtmpConnectionOptions {
     /// チャンクサイズ（デフォルト: 4096）
     pub chunk_size: RtmpChunkSize,
 
-    /// 確認応答ウィンドウサイズ（デフォルト: 5MB）
+    /// 相手へ通知する確認応答ウィンドウサイズ（デフォルト: 5,000,000 バイト）
+    ///
+    /// Set Peer Bandwidth への応答では、この値を再通知する。相手が指定したサイズや
+    /// 制限種別を受諾する応答ではない。このライブラリは受信 ACK に基づく送信量の制限を行わない。
     pub ack_window_size: u32,
 }
 
@@ -32,7 +35,7 @@ impl Default for RtmpConnectionOptions {
     fn default() -> Self {
         Self {
             chunk_size: RtmpChunkSize::saturating_new(4096),
-            ack_window_size: 5_000_000, // およそ 5MB のデータを受信する度に ack を送信する
+            ack_window_size: 5_000_000,
         }
     }
 }
@@ -69,6 +72,15 @@ pub enum RtmpConnectionEvent {
 
     /// 映像フレームを受信した
     VideoReceived(VideoFrame),
+
+    /// 相手からの確認応答 (ACK) を処理した
+    ///
+    /// 重複や後退も含め、相手が通知した値を受信順に返す。自分の送信済みバイト数に換算せず、
+    /// 送信可否や接続状態の判定には使わない。
+    AckReceived {
+        /// 通信上の 32 ビットのシーケンス番号
+        sequence_number: u32,
+    },
 
     /// コネクションの状態が変更された
     StateChanged(RtmpConnectionState),
@@ -225,7 +237,7 @@ impl fmt::Display for RtmpConnectionState {
 ///
 /// エンコーダーとデコーダーを内部に持ち、送信用バッファと受信済みメッセージのキューを
 /// 管理する。Adobe RTMP 仕様（2012 年 12 月版）5.4.3 節の ACK と 5.4.4 節のウィンドウサイズに基づいて、
-/// ACK の送信タイミングと、相手からの ACK が途絶えた場合の検出も行う。
+/// 受信したデータに対する ACK の送信タイミングを判定する。相手からの ACK の値や有無では送信を制限しない。
 #[derive(Debug, Default)]
 pub struct RtmpMessageChannel {
     decoder: RtmpMessageDecoder,
@@ -233,58 +245,10 @@ pub struct RtmpMessageChannel {
     received_messages: VecDeque<ReceivedMessage>,
     send_buf: Buf,
 
-    // こちらが送る ACK は従来どおり、チャンクだけを 32 ビットで数える。
+    // こちらが送る ACK は、ハンドシェイクを含めずチャンクだけを 32 ビットで数える。
     peer_ack_window_size: u32,
     total_bytes_received: u32,
     last_ack_sent: u32,
-
-    local_ack_window_size: u32,
-    total_bytes_sent: u64,     // 送信済みのチャンクの累計
-    handshake_bytes_sent: u64, // 0 はハンドシェイク込みの起点を使わないことを表す
-    acked_without_handshake: AckProgress,
-    acked_with_handshake: AckProgress,
-}
-
-#[derive(Debug, Default)]
-struct AckProgress {
-    confirmed: u64,
-    // 送信完了より先に届いた ACK の位置を、64 バイト区間の先頭とビット集合で保持する。
-    // 部分送信に必要な中間位置を残しながら、1 位置につき 1 要素ずつ確保するのを避ける。
-    pending: BTreeMap<u64, u64>,
-}
-
-impl AckProgress {
-    const BLOCK_SIZE: u64 = u64::BITS as u64;
-
-    fn observe(&mut self, position: u64, total_bytes_sent: u64) {
-        if position <= total_bytes_sent {
-            self.confirmed = self.confirmed.max(position);
-        } else {
-            let offset = position % Self::BLOCK_SIZE;
-            let block_start = position - offset;
-            *self.pending.entry(block_start).or_default() |= 1 << offset;
-        }
-    }
-
-    fn confirm_sent(&mut self, total_bytes_sent: u64) {
-        while let Some(mut block) = self.pending.first_entry() {
-            let block_start = *block.key();
-            let Some(sent_offset) = total_bytes_sent.checked_sub(block_start) else {
-                break;
-            };
-            let last_offset = Self::BLOCK_SIZE - 1;
-            let sent_mask = u64::MAX >> (last_offset - sent_offset.min(last_offset));
-            let ready = *block.get() & sent_mask;
-            if ready != 0 {
-                self.confirmed = self.confirmed.max(block_start + u64::from(ready.ilog2()));
-                *block.get_mut() &= !ready;
-            }
-            if *block.get() != 0 {
-                break;
-            }
-            block.remove();
-        }
-    }
 }
 
 impl RtmpMessageChannel {
@@ -324,24 +288,9 @@ impl RtmpMessageChannel {
 
     /// 送信済みの `n` バイトを送信バッファから消費する
     ///
-    /// 相手からの ACK が想定よりも遅れている場合は `false` を返す。
-    /// `false` が返された場合、呼び出し側は送信を止めるか接続を切断するなどの対処をする必要がある。
-    pub fn advance_send_buf(&mut self, n: usize) -> bool {
-        self.total_bytes_sent = self.total_bytes_sent.saturating_add(n as u64);
+    /// `n` は [`Self::send_buf()`] が返すバイト列の長さ以下でなければならない。
+    pub fn advance_send_buf(&mut self, n: usize) {
         self.send_buf.advance(n);
-
-        self.acked_without_handshake
-            .confirm_sent(self.total_bytes_sent);
-        self.acked_with_handshake
-            .confirm_sent(self.total_bytes_sent);
-
-        // 起点は決め打ちせず、どちらの解釈でも ACK が遅れている場合だけ切断判定に進む。
-        let acked_bytes = self
-            .acked_without_handshake
-            .confirmed
-            .max(self.acked_with_handshake.confirmed);
-        let unacked_bytes = self.total_bytes_sent - acked_bytes;
-        unacked_bytes <= u64::from(self.local_ack_window_size) * 2
     }
 
     /// 対応済みのメッセージを 1 つ取り出す
@@ -376,14 +325,6 @@ impl RtmpMessageChannel {
             .encode(self.send_buf.inner_mut(), chunk_stream_id, message)
     }
 
-    /// 自身の ACK ウィンドウサイズを設定する
-    ///
-    /// 送信時に、このサイズの 2 倍を超える未 ACK バイトが発生すると
-    /// [`Self::advance_send_buf()`] が `false` を返す。
-    pub fn set_local_ack_window_size(&mut self, size: u32) {
-        self.local_ack_window_size = size;
-    }
-
     /// 相手の ACK ウィンドウサイズを設定する
     ///
     /// 受信時に、このサイズの半分を超える未 ACK バイトが発生すると
@@ -391,81 +332,6 @@ impl RtmpMessageChannel {
     pub fn set_peer_ack_window_size(&mut self, size: u32) {
         self.peer_ack_window_size = size;
     }
-
-    /// 接続側が送信済みのハンドシェイク長を登録し、ハンドシェイク込みの起点を有効にする。
-    pub(crate) fn set_handshake_bytes_sent(&mut self, size: u64) {
-        self.handshake_bytes_sent = size;
-    }
-
-    fn last_confirmed_ack(&self) -> u64 {
-        // 保留だけの ACK で復元の基準を進めると、後続の送信済み位置への ACK を取りこぼす。
-        let with_handshake = self.acked_with_handshake.confirmed;
-        if with_handshake == 0 {
-            self.acked_without_handshake.confirmed
-        } else {
-            self.acked_without_handshake
-                .confirmed
-                .max(with_handshake + self.handshake_bytes_sent)
-        }
-    }
-
-    /// 相手から受信した ACK の累計受信バイト数を記録する
-    ///
-    /// `acked_bytes` は相手が通知してきた 32 ビットの累計受信バイト数。
-    /// 送信バッファにある位置を指す ACK が先に届いた場合は、
-    /// [`Self::advance_send_buf()`] で実際の送信量が反映されるまで、確認済みには数えない。
-    pub fn notify_ack_received(&mut self, acked_bytes: u32) {
-        // この時点で送信バッファにもないデータの ACK は保留しない。
-        let queued_end = self
-            .total_bytes_sent
-            .saturating_add(self.send_buf().len() as u64);
-        let sent_upper = self
-            .total_bytes_sent
-            .saturating_add(self.handshake_bytes_sent);
-        let queued_upper = queued_end.saturating_add(self.handshake_bytes_sent);
-        let Some(ack) = restore_ack_position(
-            acked_bytes,
-            self.last_confirmed_ack(),
-            sent_upper,
-            queued_upper,
-        ) else {
-            return;
-        };
-
-        if ack <= queued_end {
-            self.acked_without_handshake
-                .observe(ack, self.total_bytes_sent);
-        }
-        if self.handshake_bytes_sent != 0 && ack > self.handshake_bytes_sent {
-            self.acked_with_handshake
-                .observe(ack - self.handshake_bytes_sent, self.total_bytes_sent);
-        }
-    }
-}
-
-fn restore_ack_position(
-    acked_bytes: u32,
-    last_confirmed_ack: u64,
-    sent_upper: u64,
-    queued_upper: u64,
-) -> Option<u64> {
-    // Adobe RTMP 仕様（2012 年 12 月版）5.4.3 節は累計値を 32 ビットとするが、
-    // 計数起点と折り返しは明記していない。以下は実装間の互換性のための扱いであり、
-    // 仕様でこれらが明確化された場合は見直す必要がある。
-    const ACK_PERIOD: u64 = 1 << 32;
-    let delta = u64::from(acked_bytes.wrapping_sub(last_confirmed_ack as u32));
-    // 前回と同じ値は進捗がないか、1 周以上経過したかを区別できない。
-    if delta == 0 {
-        return None;
-    }
-    let ack = last_confirmed_ack.checked_add(delta)?;
-    // 送信済みの範囲に候補があるなら、未送信の範囲に同じ値があっても考慮しない。
-    let upper = if ack <= sent_upper {
-        sent_upper
-    } else {
-        queued_upper
-    };
-    (ack <= upper && upper - ack < ACK_PERIOD).then_some(ack)
 }
 
 #[cfg(test)]
@@ -481,219 +347,6 @@ mod tests {
     use crate::rtmp_message_decoder::RtmpMessageDecoder;
     use crate::rtmp_timestamp::RtmpTimestamp;
     use crate::rtmp_timestamp::RtmpTimestampDelta;
-
-    use crate::rtmp_handshake::HANDSHAKE_BYTES;
-
-    #[test]
-    fn handshake_ack_after_ack_with_ambiguous_origin() {
-        let mut channel = RtmpMessageChannel {
-            total_bytes_sent: 5_004_000,
-            ..Default::default()
-        };
-        channel.set_local_ack_window_size(5_000_000);
-        channel.set_handshake_bytes_sent(HANDSHAKE_BYTES);
-
-        // 最初の ACK は両起点で送信済みの範囲に収まる。
-        channel.notify_ack_received(5_003_073);
-        assert_eq!(channel.acked_without_handshake.confirmed, 5_003_073);
-        assert_eq!(channel.acked_with_handshake.confirmed, 5_000_000);
-
-        // 最初の ACK で起点を固定せず、次はハンドシェイク込みでしか成立しない値を受理する。
-        channel.total_bytes_sent = 10_000_000;
-        channel.notify_ack_received(10_003_073);
-        assert_eq!(channel.acked_without_handshake.confirmed, 5_003_073);
-        assert_eq!(channel.acked_with_handshake.confirmed, 10_000_000);
-        channel
-            .feed_send_message(RtmpMessage::ack(0))
-            .expect("ACK のエンコードは失敗しないはず");
-        assert!(channel.advance_send_buf(1), "正常な ACK で切断しない");
-
-        // 送信が進んでチャンク起点の範囲に入っても、直前と同じ ACK では更新しない。
-        channel.total_bytes_sent = 10_003_073;
-        channel.notify_ack_received(10_003_073);
-        assert_eq!(channel.acked_without_handshake.confirmed, 5_003_073);
-        assert_eq!(channel.acked_with_handshake.confirmed, 10_000_000);
-
-        // 片方が閾値を超えても、もう一方がちょうど閾値なら送信を続ける。
-        channel.total_bytes_sent = 19_999_999;
-        assert!(channel.advance_send_buf(1), "片方が閾値以内なら切断しない");
-        assert!(!channel.advance_send_buf(1), "両方が閾値を超えたら検出する");
-    }
-
-    #[test]
-    fn acknowledgement_advances_across_wrap_for_both_origins() {
-        const ACK_PERIOD: u64 = 1 << 32;
-        for offset in [0, HANDSHAKE_BYTES] {
-            let mut channel = RtmpMessageChannel {
-                total_bytes_sent: 1_000_000,
-                ..Default::default()
-            };
-            channel.set_handshake_bytes_sent(HANDSHAKE_BYTES);
-            let first_ack = (channel.total_bytes_sent + offset) as u32;
-            channel.notify_ack_received(first_ack);
-
-            // ACK の値が 32 ビットで折り返す直前まで進める。
-            channel.total_bytes_sent = ACK_PERIOD - 100 - offset;
-            channel.notify_ack_received((ACK_PERIOD - 100) as u32);
-            assert_eq!(channel.last_confirmed_ack(), ACK_PERIOD - 100);
-
-            // 生の値は最初の ACK と同じだが、前回の位置以降では新しい周回にしか対応しない。
-            channel.total_bytes_sent = ACK_PERIOD + 1_000_000;
-            channel.notify_ack_received(first_ack);
-            assert_eq!(
-                channel.last_confirmed_ack(),
-                ACK_PERIOD + u64::from(first_ack)
-            );
-            let acked_bytes = if offset == 0 {
-                channel.acked_without_handshake.confirmed
-            } else {
-                channel.acked_with_handshake.confirmed
-            };
-            assert_eq!(acked_bytes, channel.total_bytes_sent);
-        }
-    }
-
-    #[test]
-    fn acknowledgement_does_not_advance_outside_sent_range() {
-        let mut channel = RtmpMessageChannel {
-            total_bytes_sent: 5_000_000,
-            ..Default::default()
-        };
-
-        // 接続を介さないチャネルでは、ハンドシェイクによる先行を許容しない。
-        channel.notify_ack_received(5_003_073);
-        assert_eq!(channel.last_confirmed_ack(), 0);
-
-        channel.set_handshake_bytes_sent(HANDSHAKE_BYTES);
-        channel.notify_ack_received(5_003_073);
-        // 許容できる最大の位置より 1 バイト先の ACK と、前回より後退した ACK は無効。
-        for ack in [5_003_074, 5_003_072] {
-            channel.notify_ack_received(ack);
-            assert_eq!(channel.last_confirmed_ack(), 5_003_073);
-            assert_eq!(channel.acked_without_handshake.confirmed, 0);
-            assert_eq!(channel.acked_with_handshake.confirmed, 5_000_000);
-        }
-    }
-
-    #[test]
-    fn early_acknowledgements_wait_for_partial_send_notifications() {
-        for offset in [0, HANDSHAKE_BYTES] {
-            let mut channel = RtmpMessageChannel::default();
-            channel.set_local_ack_window_size(1);
-            channel.set_handshake_bytes_sent(offset);
-            channel
-                .feed_send_message(RtmpMessage::ack(0))
-                .expect("ACK のエンコードは失敗しないはず");
-            let queued = channel.send_buf().len() as u32;
-            assert!(queued > 11, "閾値の検証に必要な送信データがあるはず");
-
-            // 受信時点で送信バッファにもなかった位置は、後からバッファが増えても確認に使わない。
-            channel.notify_ack_received(queued + offset as u32 + 1);
-            assert!(channel.acked_without_handshake.pending.is_empty());
-            assert!(channel.acked_with_handshake.pending.is_empty());
-
-            // 二つの ACK が送信完了の通知より先に処理されても、送信を反映するまでは確認済みにしない。
-            channel.notify_ack_received(4 + offset as u32);
-            channel.notify_ack_received(8 + offset as u32);
-            assert_eq!(channel.acked_without_handshake.confirmed, 0);
-            assert_eq!(channel.acked_with_handshake.confirmed, 0);
-
-            // 部分送信するたびに、その範囲に入った ACK だけを切断判定に反映する。
-            let confirmed = |channel: &RtmpMessageChannel| {
-                if offset == 0 {
-                    channel.acked_without_handshake.confirmed
-                } else {
-                    channel.acked_with_handshake.confirmed
-                }
-            };
-            assert!(channel.advance_send_buf(6));
-            assert_eq!(confirmed(&channel), 4);
-            assert!(channel.advance_send_buf(4));
-            assert_eq!(confirmed(&channel), 8);
-            assert!(!channel.advance_send_buf(1));
-        }
-    }
-
-    #[test]
-    fn pending_acknowledgement_does_not_block_confirmable_progress() {
-        for offset in [0, HANDSHAKE_BYTES] {
-            let mut channel = RtmpMessageChannel::default();
-            channel.set_local_ack_window_size(3);
-            channel.set_handshake_bytes_sent(offset);
-            channel
-                .feed_send_message(RtmpMessage::ack(0))
-                .expect("ACK のエンコードは失敗しないはず");
-            assert!(channel.advance_send_buf(6));
-
-            // 未送信の位置を指す ACK は保留だけとし、後続の有効な位置を拒否する基準にしない。
-            channel.notify_ack_received(14 + offset as u32);
-            assert_eq!(channel.last_confirmed_ack(), 0);
-            channel.notify_ack_received(6 + offset as u32);
-            assert_eq!(channel.last_confirmed_ack(), 6 + offset);
-            assert!(channel.advance_send_buf(6));
-            assert!(!channel.advance_send_buf(1));
-        }
-    }
-
-    #[test]
-    fn pending_acknowledgements_keep_partial_progress_across_blocks() {
-        let mut progress = AckProgress::default();
-        // 区間の境界（最上位ビットと次の区間の最下位ビット）を部分送信でまたぐ。
-        for position in [63, 64, 65, 127, 128] {
-            progress.observe(position, 0);
-        }
-        for (sent, expected) in [(62, 0), (63, 63), (64, 64), (126, 65), (128, 128)] {
-            progress.confirm_sent(sent);
-            assert_eq!(
-                progress.confirmed, expected,
-                "送信済みの ACK だけを反映する"
-            );
-        }
-        assert!(progress.pending.is_empty(), "確定した位置を保持し続けない");
-    }
-
-    #[test]
-    fn acknowledgement_prefers_a_unique_sent_position_to_a_queued_wrap() {
-        const ACK_PERIOD: u64 = 1 << 32;
-        // 次の周回がキューにあるだけなら、送信済みの一意な位置を優先する。
-        assert_eq!(
-            restore_ack_position(101, 100, ACK_PERIOD + 100, ACK_PERIOD + 101),
-            Some(101)
-        );
-        // 既に送信済みの範囲にも複数の周回がある場合は、一意に復元できない。
-        assert_eq!(
-            restore_ack_position(101, 100, ACK_PERIOD + 101, ACK_PERIOD + 101),
-            None
-        );
-        // 送信済みの範囲に候補がなく、送信待ちの範囲でしか成立しない値は保留用に返す。
-        assert_eq!(restore_ack_position(101, 100, 100, 101), Some(101));
-        assert_eq!(restore_ack_position(101, 100, 100, ACK_PERIOD + 101), None);
-        // 累計自体の表現範囲を超えるときに小さな値へ戻さない。
-        assert_eq!(restore_ack_position(0, u64::MAX, u64::MAX, u64::MAX), None);
-    }
-
-    #[test]
-    fn acknowledgement_ignores_ambiguous_wrap_with_large_window() {
-        const ACK_PERIOD: u64 = 1 << 32;
-        let mut channel = RtmpMessageChannel {
-            total_bytes_sent: ACK_PERIOD + 20,
-            ..Default::default()
-        };
-        channel.set_local_ack_window_size(u32::MAX);
-
-        // 10 と 2^32 + 10 はどちらも送信済みなので、どちらを確認したか決められない。
-        channel.notify_ack_received(10);
-        assert_eq!(channel.last_confirmed_ack(), 0);
-        assert_eq!(channel.acked_without_handshake.confirmed, 0);
-
-        // 大きなウィンドウでも閾値の計算があふれず、閾値より 1 バイト超えたときだけ失敗する。
-        channel.total_bytes_sent = u64::from(u32::MAX) * 2 - 1;
-        channel
-            .feed_send_message(RtmpMessage::ack(0))
-            .expect("ACK のエンコードは失敗しないはず");
-        assert!(channel.advance_send_buf(1), "閾値と同じ送信量は許容する");
-        assert!(!channel.advance_send_buf(1), "閾値を超えた送信量は検出する");
-    }
 
     #[test]
     fn message_channel_send_roundtrip_regression_pbt() {

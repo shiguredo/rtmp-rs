@@ -13,9 +13,6 @@ use crate::error::Error;
 // 問題が発生するまでは固定値を使用しておく
 const RTMP_VERSION: u8 = 3;
 const HANDSHAKE_PACKET_SIZE: usize = 1536;
-// Adobe RTMP 仕様（2012 年 12 月版）5.2.2～5.2.4 節の片方向のバイト数。
-// 別形式のハンドシェイクを扱うようになった場合は計上方法を見直す。
-pub(crate) const HANDSHAKE_BYTES: u64 = 1 + 2 * HANDSHAKE_PACKET_SIZE as u64;
 const APP_VERSION: [u8; 4] = [0, 0, 0, 0]; // 一番小さな値を使うことで、途中から導入されたダイジェスト形式のサポートを不要にしている
 const RANDOM_DATA: [u8; HANDSHAKE_PACKET_SIZE - 8] = [0; HANDSHAKE_PACKET_SIZE - 8]; // 固定値で別に困らないので固定値にしておく
 const TIMESTAMP: u32 = 0; // 同上
@@ -194,11 +191,6 @@ impl RtmpServerHandshake {
     /// 受信処理が完了していて、かつ送信バッファが空になった場合にのみ `true` を返す。
     pub fn is_send_complete(&self) -> bool {
         self.phase == Phase::Complete && self.send_buf.is_empty()
-    }
-
-    /// S0/S1/S2 を送り終えたかを、C2 の受信に関係なく判定する。
-    pub(crate) fn has_sent_handshake_bytes(&self) -> bool {
-        matches!(self.phase, Phase::P2 | Phase::Complete) && self.send_buf.is_empty()
     }
 }
 
