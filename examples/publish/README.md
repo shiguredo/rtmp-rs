@@ -8,7 +8,7 @@ H.264/AAC の MP4 ファイルを RTMP サーバーに配信するサンプル�
 # [NOTE]
 # 配信先サーバーを変更したい場合には `cargo run -p publish -- -h` で
 # 表示されるヘルプを参考にして、引数を指定してください
-cargo run -p publish --app live --stream stream /path/to/input.mp4
+cargo run -p publish -- -a live -s stream /path/to/input.mp4
 ```
 
 配信先として利用可能な RTMP サーバーは次のコマンドで起動できます。
