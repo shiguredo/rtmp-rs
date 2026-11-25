@@ -311,6 +311,88 @@ fn message_channel_rejects_invalid_video_without_changing_output() -> noprop::Te
     Ok(())
 }
 
+/// チャネルは音声・映像の時刻不一致を呼び出し元に返し、後続の送信には影響させない
+#[test]
+fn message_channel_propagates_mismatched_media_timestamps() -> noprop::TestResult {
+    let seed = noprop::seed_from_env_or_time(SEED_ENV)?;
+    noprop::Runner::new(seed).run(CASES, |ctx: &mut TestCaseContext| {
+        let stream_id = RtmpMessageStreamId::new(noprop::sample_u32_in(ctx, 1..=500));
+        let step = noprop::sample_u32_in(ctx, 1..=10_000);
+        let timestamp = RtmpTimestamp::from_millis(step);
+        let header = RtmpMessageHeader {
+            stream_id,
+            timestamp,
+        };
+        let mut audio = sample_audio_frame(ctx);
+        audio.timestamp = timestamp;
+        let mut video = sample_video_frame(ctx);
+        video.timestamp = timestamp;
+
+        let first = RtmpMessage::Audio {
+            header,
+            frame: audio.clone(),
+        };
+        let mut channel = RtmpMessageChannel::default();
+        let mut control = RtmpMessageChannel::default();
+        for channel in [&mut channel, &mut control] {
+            channel
+                .feed_send_message(first.clone())
+                .expect("一致する先行メッセージを送信できるはず");
+        }
+
+        // 同じチャンクストリームで有効な先行メッセージを送った後、時刻だけの不一致を作る。
+        let mismatched_header = RtmpMessageHeader {
+            timestamp: RtmpTimestamp::from_millis(3 * step),
+            ..header
+        };
+        for invalid in [
+            RtmpMessage::Audio {
+                header: mismatched_header,
+                frame: audio.clone(),
+            },
+            RtmpMessage::Video {
+                header: mismatched_header,
+                frame: video,
+            },
+        ] {
+            let error = channel
+                .feed_send_message(invalid)
+                .expect_err("チャネルも時刻の不一致を拒否するはず");
+            assert_eq!(
+                error.kind,
+                ErrorKind::InvalidInput,
+                "エンコーダーの入力エラーを伝えるはず"
+            );
+            assert_eq!(
+                channel.send_buf(),
+                control.send_buf(),
+                "拒否しても送信待ちのバイト列は変わらないはず"
+            );
+        }
+
+        audio.timestamp = RtmpTimestamp::from_millis(2 * step);
+        let next = RtmpMessage::Audio {
+            header: RtmpMessageHeader {
+                timestamp: audio.timestamp,
+                ..header
+            },
+            frame: audio,
+        };
+        for channel in [&mut channel, &mut control] {
+            channel
+                .feed_send_message(next.clone())
+                .expect("拒否後も一致するメッセージを送信できるはず");
+        }
+        assert_eq!(
+            channel.send_buf(),
+            control.send_buf(),
+            "拒否が後続のヘッダー圧縮に影響しないはず"
+        );
+        Ok(())
+    })?;
+    Ok(())
+}
+
 /// チャネルは無視対象を飛ばして次の通常メッセージを返し、ACK には受信した全バイトを数える
 #[test]
 fn message_channel_skips_ignored_messages_and_counts_their_bytes() -> noprop::TestResult {

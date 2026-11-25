@@ -1024,9 +1024,11 @@ fn accept_play_flow() -> noprop::TestResult {
     Ok(())
 }
 
-/// Playing 状態で有効なメディアは送信でき、不正な映像はバッファを変更せずに拒否する
+/// Playing 状態で送信した音声・映像の時刻を保持し、不正な映像はバッファを変更せずに拒否する
 #[test]
 fn send_media_in_playing() -> noprop::TestResult {
+    use shiguredo_rtmp::rtmp_message_decoder::RtmpMessageDecoder;
+
     let seed = noprop::seed_from_env_or_time(SEED_ENV)?;
     noprop::Runner::new(seed).run(CASES, |ctx: &mut TestCaseContext| {
         // ケースごとに接続を作り直し、前のケースの状態を持ち越さない
@@ -1058,7 +1060,33 @@ fn send_media_in_playing() -> noprop::TestResult {
         server.accept().expect("play の受理に成功するはず");
         drain_events(&mut server);
 
+        // 再生開始までの送信メッセージを先に読み、通知されたチャンクサイズを反映する。
+        // 再生開始応答はメディアと同じチャンクストリームを使うため、ヘッダーの履歴も引き継ぐ。
+        let mut decoder = RtmpMessageDecoder::default();
+        decoder.feed_buf(server.send_buf());
+        while decoder
+            .decode()
+            .expect("再生開始までの送信メッセージをデコードできるはず")
+            .is_some()
+        {}
+
+        let expected_audio_timestamp = audio.timestamp;
+        let send_offset = server.send_buf().len();
         server.send_audio(audio).expect("send_audio に成功するはず");
+
+        // send_audio が追加したバイト列だけをデコーダーに渡す。
+        decoder.feed_buf(&server.send_buf()[send_offset..]);
+        let message = decoder
+            .decode()
+            .expect("送信した音声メッセージをデコードできるはず");
+        let Some(RtmpMessage::Audio { header, frame }) = message else {
+            panic!("音声メッセージが送信バッファに追加されるはず: {message:?}");
+        };
+        assert_eq!(
+            (header.timestamp, frame.timestamp),
+            (expected_audio_timestamp, expected_audio_timestamp),
+            "音声メッセージのヘッダーとフレームの時刻は入力と一致するはず"
+        );
 
         // コーデックに必要な AVC パケットタイプの有無だけを逆にする。
         let pending = server.send_buf().to_vec();
@@ -1080,12 +1108,26 @@ fn send_media_in_playing() -> noprop::TestResult {
             "不正な映像は送信待ちのバイト列を変更しないはず"
         );
 
+        // 同じフレームを正しい組み合わせで送り、追加されたメッセージの時刻を確認する。
+        let expected_video_timestamp = video.timestamp;
         server
             .send_video(video)
             .expect("有効な映像フレームは失敗後も送信できるはず");
-        assert!(
-            server.send_buf().len() > pending.len(),
-            "有効な映像が送信バッファに追加されるはず"
+        let appended = server
+            .send_buf()
+            .strip_prefix(pending.as_slice())
+            .expect("有効な映像を送信しても先行バイト列は変わらないはず");
+        decoder.feed_buf(appended);
+        let message = decoder
+            .decode()
+            .expect("送信した映像メッセージをデコードできるはず");
+        let Some(RtmpMessage::Video { header, frame }) = message else {
+            panic!("映像メッセージが送信バッファに追加されるはず: {message:?}");
+        };
+        assert_eq!(
+            (header.timestamp, frame.timestamp),
+            (expected_video_timestamp, expected_video_timestamp),
+            "映像メッセージのヘッダーとフレームの時刻は入力と一致するはず"
         );
         Ok(())
     })?;

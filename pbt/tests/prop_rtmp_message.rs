@@ -1103,6 +1103,94 @@ fn timestamp_boundary() -> noprop::TestResult {
     Ok(())
 }
 
+/// 時刻が一致しない音声・映像を拒否し、既存の出力と後続のヘッダー圧縮を維持する
+#[test]
+fn rejects_mismatched_media_timestamps_without_changing_output() -> noprop::TestResult {
+    use shiguredo_rtmp::error::ErrorKind;
+    use shiguredo_rtmp::rtmp_chunk::MessageHeaderFormat;
+
+    let seed = noprop::seed_from_env_or_time(SEED_ENV)?;
+    noprop::Runner::new(seed).run(BOUNDARY_CASES, |ctx: &mut TestCaseContext| {
+        let chunk_stream_id = RtmpChunkStreamId::new(4).expect("4 は有効なチャンクストリーム ID");
+        let control_id = RtmpChunkStreamId::new(2).expect("2 は制御用のチャンクストリーム ID");
+        let chunk_size = RtmpChunkSize::MIN;
+        let step = noprop::sample_u32_in(ctx, 1..=10_000);
+        let with_timestamps = |mut message, header_ms, frame_ms| {
+            let (header, frame_timestamp) = match &mut message {
+                RtmpMessage::Audio { header, frame } => (header, &mut frame.timestamp),
+                RtmpMessage::Video { header, frame } => (header, &mut frame.timestamp),
+                _ => panic!("音声または映像を生成するはず"),
+            };
+            header.timestamp = RtmpTimestamp::from_millis(header_ms);
+            *frame_timestamp = RtmpTimestamp::from_millis(frame_ms);
+            message
+        };
+
+        for mut media in [sample_audio_message(ctx), sample_video_message(ctx)] {
+            // ペイロードを必ず分割し、拒否でチャンクサイズだけが変わる回帰も検出する。
+            let data = match &mut media {
+                RtmpMessage::Audio { frame, .. } => &mut frame.data,
+                RtmpMessage::Video { frame, .. } => &mut frame.data,
+                _ => panic!("音声または映像を生成するはず"),
+            };
+            data.resize(data.len().max(chunk_size.get()), 0);
+            let first = with_timestamps(media.clone(), step, step);
+            let next = with_timestamps(media.clone(), 2 * step, 2 * step);
+            let setup = || {
+                let mut encoder = RtmpMessageEncoder::default();
+                let mut wire = Vec::new();
+                encoder
+                    .encode(
+                        &mut wire,
+                        control_id,
+                        RtmpMessage::set_chunk_size(chunk_size),
+                    )
+                    .expect("チャンクサイズの変更を追加できるはず");
+                encoder
+                    .encode(&mut wire, chunk_stream_id, first.clone())
+                    .expect("一致する先行メッセージをエンコードできるはず");
+                (encoder, wire)
+            };
+            let (mut control, mut expected) = setup();
+            let pending_len = expected.len();
+            control
+                .encode(&mut expected, chunk_stream_id, next.clone())
+                .expect("一致する後続メッセージをエンコードできるはず");
+            // RTMP 仕様 5.3.1.2 節の形式 3 を使うよう、型・長さ・時刻差分をそろえる。
+            assert_eq!(
+                expected[pending_len] >> 6,
+                MessageHeaderFormat::F3 as u8,
+                "対照の後続メッセージは形式 3 を使うはず"
+            );
+
+            // 新しい時刻が履歴に残る場合、0 を特別扱いする場合、上位のビットを比較しない場合を検出する。
+            for (header_ms, frame_ms) in [(3 * step, 3 * step + 1), (0, 1000), (0x0100_0000, 0)] {
+                let (mut actual, mut wire) = setup();
+                let invalid = with_timestamps(media.clone(), header_ms, frame_ms);
+                let error = actual
+                    .encode(&mut wire, chunk_stream_id, invalid)
+                    .expect_err("時刻が一致しないメッセージは拒否するはず");
+                assert_eq!(
+                    error.kind,
+                    ErrorKind::InvalidInput,
+                    "時刻の不一致は入力エラーになるはず"
+                );
+                assert_eq!(
+                    wire,
+                    expected[..pending_len],
+                    "拒否しても既存のバイト列は変わらないはず"
+                );
+                actual
+                    .encode(&mut wire, chunk_stream_id, next.clone())
+                    .expect("拒否した後も有効なメッセージをエンコードできるはず");
+                assert_eq!(wire, expected, "拒否が後続の圧縮や分割に影響しないはず");
+            }
+        }
+        Ok(())
+    })?;
+    Ok(())
+}
+
 // =============================================================================
 // ヘルパー関数
 // =============================================================================

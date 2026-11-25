@@ -317,8 +317,11 @@ impl RtmpMessageChannel {
     ///
     /// # エラー
     ///
-    /// [`RtmpMessageEncoder::encode`] が入力を拒否した場合は、そのエラーを返す。
-    /// 送信バッファと後続のメッセージのチャンクエンコード状態は変わらない。
+    /// メッセージのストリーム ID が有効なチャンクストリーム ID に変換された後、
+    /// 音声・映像メッセージのヘッダーとフレームのタイムスタンプが一致しなければ、
+    /// `kind` が [`crate::error::ErrorKind::InvalidInput`] のエラーを返す。
+    /// このエラーを含め、[`RtmpMessageEncoder::encode`] のエラーはそのまま返す。
+    /// 送信バッファとチャンクのエンコード状態は変わらない。
     pub fn feed_send_message(&mut self, message: RtmpMessage) -> Result<(), Error> {
         let chunk_stream_id = RtmpChunkStreamId::from_message_stream_id(message.header().stream_id);
         self.encoder

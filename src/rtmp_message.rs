@@ -236,6 +236,10 @@ pub enum RtmpMessage {
     },
 
     /// 音声メッセージ
+    ///
+    /// [`crate::rtmp_message_encoder::RtmpMessageEncoder::encode`] で送信するときは、
+    /// [`RtmpMessageHeader::timestamp`] と [`AudioFrame::timestamp`] を一致させる。
+    /// RTMP に書き込む時刻は 1 つで、フレーム単独でもその時刻を保持する。
     Audio {
         /// このメッセージのヘッダー
         header: RtmpMessageHeader,
@@ -245,6 +249,10 @@ pub enum RtmpMessage {
     },
 
     /// 映像メッセージ
+    ///
+    /// [`crate::rtmp_message_encoder::RtmpMessageEncoder::encode`] で送信するときは、
+    /// [`RtmpMessageHeader::timestamp`] と [`VideoFrame::timestamp`] を一致させる。
+    /// この時刻は [`VideoFrame::composition_timestamp_offset`] とは別の値である。
     Video {
         /// このメッセージのヘッダー
         header: RtmpMessageHeader,

@@ -553,7 +553,7 @@ fn control_message_flow() -> noprop::TestResult {
     Ok(())
 }
 
-/// Publishing 状態で有効なメディアは送信でき、不正な映像はバッファを変更せずに拒否する
+/// Publishing 状態で送信した音声・映像の時刻を保持し、不正な映像はバッファを変更せずに拒否する
 #[test]
 fn publish_send_media() -> noprop::TestResult {
     let seed = noprop::seed_from_env_or_time(SEED_ENV)?;
@@ -576,11 +576,36 @@ fn publish_send_media() -> noprop::TestResult {
         // ケースごとに Publishing 状態のクライアントを作り直す
         let mut client = setup_publishing_client(&tc_url, &stream_name);
 
-        // オーディオフレームを送信
+        // 配信開始までの送信メッセージを先に読み、通知されたチャンクサイズを反映する。
+        // publish コマンドはメディアと同じチャンクストリームを使うため、ヘッダーの履歴も引き継ぐ。
+        let mut decoder = RtmpMessageDecoder::default();
+        decoder.feed_buf(client.send_buf());
+        while decoder
+            .decode()
+            .expect("配信開始までの送信メッセージをデコードできるはず")
+            .is_some()
+        {}
+
         for frame in audio_frames {
+            let expected_timestamp = frame.timestamp;
+            let send_offset = client.send_buf().len();
             client
                 .send_audio(frame)
                 .expect("AudioFrame の送信に失敗した");
+
+            // send_audio が追加したバイト列だけをデコーダーに渡す。
+            decoder.feed_buf(&client.send_buf()[send_offset..]);
+            let message = decoder
+                .decode()
+                .expect("送信した音声メッセージをデコードできるはず");
+            let Some(RtmpMessage::Audio { header, frame }) = message else {
+                panic!("音声メッセージが送信バッファに追加されるはず: {message:?}");
+            };
+            assert_eq!(
+                (header.timestamp, frame.timestamp),
+                (expected_timestamp, expected_timestamp),
+                "音声メッセージのヘッダーとフレームの時刻は入力と一致するはず"
+            );
         }
 
         for frame in video_frames {
@@ -600,13 +625,26 @@ fn publish_send_media() -> noprop::TestResult {
                 "不正な映像は送信待ちのバイト列を変更しないはず"
             );
 
-            // 同じフレームを正しい組み合わせで送信すれば、送信バッファに追加される。
+            // 同じフレームを正しい組み合わせで送り、追加されたメッセージの時刻を確認する。
+            let expected_timestamp = frame.timestamp;
             client
                 .send_video(frame)
                 .expect("有効な映像フレームは失敗後も送信できるはず");
-            assert!(
-                client.send_buf().len() > pending.len(),
-                "有効な映像が送信バッファに追加されるはず"
+            let appended = client
+                .send_buf()
+                .strip_prefix(pending.as_slice())
+                .expect("有効な映像を送信しても先行バイト列は変わらないはず");
+            decoder.feed_buf(appended);
+            let message = decoder
+                .decode()
+                .expect("送信した映像メッセージをデコードできるはず");
+            let Some(RtmpMessage::Video { header, frame }) = message else {
+                panic!("映像メッセージが送信バッファに追加されるはず: {message:?}");
+            };
+            assert_eq!(
+                (header.timestamp, frame.timestamp),
+                (expected_timestamp, expected_timestamp),
+                "映像メッセージのヘッダーとフレームの時刻は入力と一致するはず"
             );
         }
         Ok(())
