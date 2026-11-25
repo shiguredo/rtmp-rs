@@ -126,8 +126,7 @@ impl RtmpServerConnection {
                     .push_back(RtmpConnectionEvent::VideoReceived(frame));
             }
             RtmpMessage::WinAckSize { size, .. } => {
-                // 相手が期待する ACK 送信間隔を設定
-                self.message_channel.set_peer_ack_window_size(size);
+                self.message_channel.handle_win_ack_size(size)?;
             }
             RtmpMessage::Ack {
                 sequence_number, ..

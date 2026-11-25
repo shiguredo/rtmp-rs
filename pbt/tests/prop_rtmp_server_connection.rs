@@ -247,6 +247,71 @@ fn clear_send_buf(server: &mut RtmpServerConnection) {
     }
 }
 
+/// 初期の大きい ACK ウィンドウを双方へ通知し、そのとき積まれた ACK を読み捨てる
+///
+/// 通知 1 件分の長さを返す。
+fn apply_initial_window(
+    client: &mut shiguredo_rtmp::rtmp_client_connection::RtmpPublishClientConnection,
+    server: &mut RtmpServerConnection,
+    from_client: &mut shiguredo_rtmp::rtmp_message_decoder::RtmpMessageDecoder,
+    from_server: &mut shiguredo_rtmp::rtmp_message_decoder::RtmpMessageDecoder,
+    old_size: u32,
+) -> u32 {
+    let initial = encode_message_on(2, RtmpMessage::win_ack_size(old_size));
+    client
+        .feed_recv_buf(&initial)
+        .expect("クライアントは初期窓を受理するはず");
+    server
+        .feed_recv_buf(&initial)
+        .expect("サーバーは初期窓を受理するはず");
+    consume_all(from_client, client.send_buf());
+    consume_all(from_server, server.send_buf());
+    client.advance_send_buf(client.send_buf().len());
+    clear_send_buf(server);
+    initial.len() as u32
+}
+
+/// ハンドシェイクを完了したクライアントとサーバーを作る
+///
+/// クライアントの `Connecting` 移行時に積まれた送信は消費せずに残す。
+/// テスト側で送信バッファをデコードしてチャンク形式の履歴を作り、送信済みにする。
+/// この時点で双方のメッセージチャネルの受信量は 0 のままである。
+fn established_pair() -> (
+    shiguredo_rtmp::rtmp_client_connection::RtmpPublishClientConnection,
+    RtmpServerConnection,
+) {
+    use shiguredo_rtmp::rtmp_client_connection::RtmpPublishClientConnection;
+    use shiguredo_rtmp::rtmp_url::RtmpUrl;
+
+    let url = RtmpUrl::parse("rtmp://example.invalid/live/stream").expect("有効な URL のはず");
+    let mut client = RtmpPublishClientConnection::new(url);
+    let mut server = RtmpServerConnection::new();
+    server
+        .feed_recv_buf(client.send_buf())
+        .expect("サーバーは C0 / C1 を受理するはず");
+    client.advance_send_buf(client.send_buf().len());
+    client
+        .feed_recv_buf(server.send_buf())
+        .expect("クライアントは S0 / S1 / S2 を受理するはず");
+    clear_send_buf(&mut server);
+    server
+        .feed_recv_buf(client.send_buf())
+        .expect("サーバーは C2 を受理するはず");
+    client.advance_send_buf(client.send_buf().len());
+    clear_send_buf(&mut server);
+    (client, server)
+}
+
+/// 送信バッファにあるメッセージをすべてデコードして読み捨てる
+fn consume_all(decoder: &mut shiguredo_rtmp::rtmp_message_decoder::RtmpMessageDecoder, buf: &[u8]) {
+    decoder.feed_buf(buf);
+    while decoder
+        .decode()
+        .expect("送信バッファのメッセージをデコードできるはず")
+        .is_some()
+    {}
+}
+
 // =============================================================================
 // Flow テスト
 // =============================================================================
@@ -399,6 +464,172 @@ fn early_ack_is_reported_before_handshake_send_confirmation() -> noprop::TestRes
             None,
             "送信済み通知時に ACK を再通知しないはず"
         );
+        Ok(())
+    })?;
+    Ok(())
+}
+
+/// ACK ウィンドウを縮めても、新しい半窓以下なら ACK を送らない
+#[test]
+fn shrinking_ack_window_within_half_window_waits() -> noprop::TestResult {
+    use shiguredo_rtmp::rtmp_message_decoder::RtmpMessageDecoder;
+
+    let seed = noprop::seed_from_env_or_time(SEED_ENV)?;
+    noprop::Runner::new(seed).run(CASES, |ctx: &mut TestCaseContext| {
+        let (mut client, mut server) = established_pair();
+        let mut from_client = RtmpMessageDecoder::default();
+        let mut from_server = RtmpMessageDecoder::default();
+
+        // 初期の大きいウィンドウを通知する。既定の 0 で判定された ACK は読み捨てる。
+        let message_len = apply_initial_window(
+            &mut client,
+            &mut server,
+            &mut from_client,
+            &mut from_server,
+            noprop::sample_u32_in(ctx, 1024..=u32::MAX),
+        );
+
+        // 直前の ACK 以降の受信量 (通知 1 件分) に対して、新しいウィンドウサイズを
+        // 2 件分から 1 バイトずつ小さい値まで動かす。整数除算のため半窓は同じ値が
+        // 続くことがあるが、未確認量が半窓を超えた場合だけ ACK を送る。
+        let delta = noprop::sample_usize_in(ctx, 0..4) as u32;
+        let boundary_size = 2 * message_len - delta;
+        let expect_ack = message_len > boundary_size / 2;
+        let boundary = encode_message_on(2, RtmpMessage::win_ack_size(boundary_size));
+        client
+            .feed_recv_buf(&boundary)
+            .expect("クライアントは縮小した窓を受理するはず");
+        server
+            .feed_recv_buf(&boundary)
+            .expect("サーバーは縮小した窓を受理するはず");
+        let received = 2 * message_len;
+        for (peer, decoder, buf) in [
+            ("クライアント", &mut from_client, client.send_buf()),
+            ("サーバー", &mut from_server, server.send_buf()),
+        ] {
+            if expect_ack {
+                decoder.feed_buf(buf);
+                assert_eq!(
+                    decoder.decode().expect("送信 ACK をデコードできるはず"),
+                    Some(RtmpMessage::ack(received)),
+                    "{peer} は未確認量が新しい半窓を超える縮小で累計値を返すはず"
+                );
+            } else {
+                assert!(
+                    buf.is_empty(),
+                    "{peer} は未確認量が新しい半窓以下の縮小では ACK を送らないはず"
+                );
+            }
+        }
+        client.advance_send_buf(client.send_buf().len());
+        clear_send_buf(&mut server);
+
+        // もう 1 件受けて半窓を超えると、その累計値の ACK を送る。
+        let no_op = encode_message_on(
+            2,
+            RtmpMessage::set_chunk_size(shiguredo_rtmp::rtmp_chunk::RtmpChunkSize::default()),
+        );
+        assert_eq!(no_op.len() as u32, message_len, "通知の大きさが同じ前提");
+        client
+            .feed_recv_buf(&no_op)
+            .expect("クライアントはウィンドウを変えない通知を受理するはず");
+        server
+            .feed_recv_buf(&no_op)
+            .expect("サーバーはウィンドウを変えない通知を受理するはず");
+        // これまでの受信量は通知 3 件分。ACK を送った分岐では直前の ACK が 2 件目、
+        // 送らなかった分岐では 1 件目の受信時点なので、未確認量はどちらも半窓を超える。
+        let received = 3 * message_len;
+        from_client.feed_buf(client.send_buf());
+        assert_eq!(
+            from_client.decode().expect("送信 ACK をデコードできるはず"),
+            Some(RtmpMessage::ack(received)),
+            "クライアントは半窓を超えた時点で累計値を返すはず"
+        );
+        from_server.feed_buf(server.send_buf());
+        assert_eq!(
+            from_server.decode().expect("送信 ACK をデコードできるはず"),
+            Some(RtmpMessage::ack(received)),
+            "サーバーは半窓を超えた時点で累計値を返すはず"
+        );
+        Ok(())
+    })?;
+    Ok(())
+}
+
+/// ACK ウィンドウを縮めると、次の入力を待たずに双方が ACK を送る
+#[test]
+fn shrinking_ack_window_sends_ack_immediately() -> noprop::TestResult {
+    use shiguredo_rtmp::rtmp_message_decoder::RtmpMessageDecoder;
+
+    let seed = noprop::seed_from_env_or_time(SEED_ENV)?;
+    noprop::Runner::new(seed).run(CASES, |ctx: &mut TestCaseContext| {
+        let (mut client, mut server) = established_pair();
+
+        // 窓を縮めた場合でも、前の窓の大きさによらず同じ時点で ACK を送る。
+        let mut from_client = RtmpMessageDecoder::default();
+        let mut from_server = RtmpMessageDecoder::default();
+        let old_size = noprop::sample_u32_in(ctx, 128..=u32::MAX);
+        let mut received = apply_initial_window(
+            &mut client,
+            &mut server,
+            &mut from_client,
+            &mut from_server,
+            old_size,
+        );
+        // 未確認量は通知 2 件分。半分を超えるだけの縮小も含めるため、4 件分未満にする。
+        let new_size = noprop::sample_u32_in(ctx, 1..4 * received);
+        let mut feed_and_check_ack = |input: &[u8], expect_ack: bool| {
+            client
+                .feed_recv_buf(input)
+                .expect("クライアントは入力を受理するはず");
+            server
+                .feed_recv_buf(input)
+                .expect("サーバーは入力を受理するはず");
+            received += input.len() as u32;
+            for (peer, decoder, buf) in [
+                ("クライアント", &mut from_client, client.send_buf()),
+                ("サーバー", &mut from_server, server.send_buf()),
+            ] {
+                if expect_ack {
+                    decoder.feed_buf(buf);
+                    assert_eq!(
+                        decoder.decode().expect("送信 ACK をデコードできるはず"),
+                        Some(RtmpMessage::ack(received as u32)),
+                        "{peer} は次の入力を待たず今回までの累計値を返すはず"
+                    );
+                    assert_eq!(
+                        decoder.decode().expect("応答をデコードできるはず"),
+                        None,
+                        "{peer} は同じ累計値の ACK を重ねないはず"
+                    );
+                } else {
+                    assert!(buf.is_empty(), "{peer} は適用中の窓では ACK を送らないはず");
+                }
+            }
+            client.advance_send_buf(client.send_buf().len());
+            clear_send_buf(&mut server);
+        };
+
+        // 未確認量は通知 2 件分。新しい窓の全体に達する場合と、半分を超えるだけの場合を含める。
+        let smaller = encode_message_on(2, RtmpMessage::win_ack_size(new_size));
+        let split = noprop::sample_usize_in(ctx, 1..smaller.len());
+        let initial = encode_message_on(2, RtmpMessage::win_ack_size(old_size));
+        feed_and_check_ack(&initial, false);
+        feed_and_check_ack(&smaller[..split], false);
+        feed_and_check_ack(&smaller[split..], true);
+
+        // 縮小で ACK を積んだ直後に追加の受信がなくても、同じ累計値は重ねて送らない。
+        feed_and_check_ack(&[], false);
+
+        // 次の入力だけで適用済みの半窓を超える。窓を 2 回更新しても ACK は 1 回で、
+        // 続く判定では最後の窓を使う。チャンクサイズ通知は ACK 窓を変えずに受信量だけを増やす。
+        let chunk_size = shiguredo_rtmp::rtmp_chunk::RtmpChunkSize::default();
+        let unchanged = encode_message_on(2, RtmpMessage::set_chunk_size(chunk_size));
+        let restored =
+            encode_message_on(2, RtmpMessage::win_ack_size((4 * unchanged.len()) as u32));
+        feed_and_check_ack(&[smaller, restored].concat(), true);
+        feed_and_check_ack(&unchanged.repeat(2), false);
+        feed_and_check_ack(&unchanged[..1], true);
         Ok(())
     })?;
     Ok(())
