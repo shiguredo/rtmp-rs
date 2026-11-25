@@ -36,6 +36,14 @@ impl RtmpHandshakeOptions {
 
         packet
     }
+
+    fn matches_response(&self, packet: &[u8]) -> bool {
+        // Adobe RTMP 仕様（2012 年 12 月版）5.2.4 節でエコーするのは time と乱数欄だけ。
+        // time2 は相手が読み取った時刻なので照合しない。応答の形式が変わる場合は見直す。
+        packet.len() == HANDSHAKE_PACKET_SIZE
+            && packet[..4] == self.timestamp.to_be_bytes()
+            && packet[8..] == self.random_data
+    }
 }
 
 impl Default for RtmpHandshakeOptions {
@@ -84,8 +92,9 @@ impl RtmpServerHandshake {
     /// 受信したバイト列をハンドシェイク処理に渡す
     ///
     /// ハンドシェイクに必要なデータが揃うまで内部バッファに蓄積する。
-    /// 受信した RTMP のバージョンが不正な場合や、クライアントの C2 がサーバーの S1 と
-    /// 一致しない場合は [`Error`] を返す。
+    /// 受信した RTMP のバージョンが不正な場合や、クライアントの C2 がサーバーの S1 の
+    /// 時刻と乱数欄を正しくエコーしていない場合は [`Error`] を返す。
+    /// C2 の読み取り時刻 (time2) は照合しない。
     pub fn feed_recv_buf(&mut self, buf: &[u8]) -> Result<(), Error> {
         self.recv_buf.extend_from_slice(buf);
         self.handle_recv_buf()?;
@@ -147,8 +156,8 @@ impl RtmpServerHandshake {
 
         // 受信: C2
         let c2_packet = self.recv_buf.read_bytes(HANDSHAKE_PACKET_SIZE)?;
-        if self.options.phase1_packet() != c2_packet {
-            return Err(Error::invalid_data("C2 packet does not match S1 packet"));
+        if !self.options.matches_response(&c2_packet) {
+            return Err(Error::invalid_data("C2 echo does not match S1"));
         }
 
         self.phase = Phase::Complete;
@@ -236,8 +245,9 @@ impl RtmpClientHandshake {
     /// 受信したバイト列をハンドシェイク処理に渡す
     ///
     /// ハンドシェイクに必要なデータが揃うまで内部バッファに蓄積する。
-    /// 受信した RTMP のバージョンが不正な場合や、サーバーの S2 がクライアントの C1 と
-    /// 一致しない場合は [`Error`] を返す。
+    /// 受信した RTMP のバージョンが不正な場合や、サーバーの S2 がクライアントの C1 の
+    /// 時刻と乱数欄を正しくエコーしていない場合は [`Error`] を返す。
+    /// S2 の読み取り時刻 (time2) は照合しない。
     pub fn feed_recv_buf(&mut self, buf: &[u8]) -> Result<(), Error> {
         self.recv_buf.extend_from_slice(buf);
         self.handle_recv_buf()?;
@@ -279,8 +289,8 @@ impl RtmpClientHandshake {
         // 受信: S1, S2
         let s1_packet = self.recv_buf.read_bytes(HANDSHAKE_PACKET_SIZE)?;
         let s2_packet = self.recv_buf.read_bytes(HANDSHAKE_PACKET_SIZE)?;
-        if s2_packet != self.options.phase1_packet() {
-            return Err(Error::invalid_data("S2 packet does not match C1 packet"));
+        if !self.options.matches_response(&s2_packet) {
+            return Err(Error::invalid_data("S2 echo does not match C1"));
         }
 
         // 送信: C2
