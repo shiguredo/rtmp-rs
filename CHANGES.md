@@ -20,6 +20,10 @@
 - [CHANGE] `RtmpMessageType` に `SharedObjectAmf3`、`SharedObjectAmf0`、`Aggregate` を追加する。網羅的な `match` には分岐の追加が必要になる
   - @voluntas
 
+- [CHANGE] FLV / RTMP の音声タグで `is_8bit_sample` と SoundSize の対応を `true` が 0、`false` が 1 に修正する。Speex は読み書きとも 1 として扱う
+  - 旧版の極性に合わせてフラグを反転している利用側は、その補正を外す必要がある。旧版が誤ったビットで出力した PCM は自動補正しない
+  - @voluntas
+
 - [ADD] RTMP の各要素をモジュールとして公開 API に追加する
   - @voluntas
 

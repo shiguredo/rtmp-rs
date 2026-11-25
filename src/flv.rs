@@ -13,14 +13,18 @@ use crate::{
 /// 音声フレームを FLV の音声タグの形式で `buf` の末尾に書き込む
 ///
 /// 音声タグのヘッダー（AudioTagHeader）に音声フォーマット・サンプリングレート・
-/// サンプルサイズ・チャンネル数を書き込み、その後に音声データを書き込む。
+/// SoundSize・チャンネル数を書き込み、その後に音声データを書き込む。
+/// SoundSize とフレームのフラグの対応は [`AudioFrame::is_8bit_sample`] を参照。
+/// Speex ではフレームのフラグにかかわらず SoundSize を 1 として書き込む。
 /// AAC の場合は AAC パケットタイプ（シーケンスヘッダーか生データか）も書き込む
 /// （FLV 仕様 E.4.2 節）。
 pub fn encode_audio_frame(buf: &mut Vec<u8>, frame: &AudioFrame) {
-    // オーディオヘッダーバイトを構築
+    // Adobe FLV 仕様 10.1 の E.4.2.1 節では 8 ビットが 0、16 ビットが 1。Speex は 1 が必須。
+    // 音声タグの仕様を変更するときはデコード側と合わせてこの対応を見直す。
+    let sound_size = u8::from(frame.format == AudioFormat::Speex || !frame.is_8bit_sample);
     let header = ((frame.format as u8) << 4)
         | ((frame.sample_rate as u8) << 2)
-        | ((frame.is_8bit_sample as u8) << 1)
+        | (sound_size << 1)
         | (frame.is_stereo as u8);
 
     // ヘッダーバイトを書き込む
@@ -38,7 +42,9 @@ pub fn encode_audio_frame(buf: &mut Vec<u8>, frame: &AudioFrame) {
 /// FLV の音声タグをデコードして [`AudioFrame`] を返す
 ///
 /// 音声タグのヘッダー（AudioTagHeader）から音声フォーマット・サンプリングレート・
-/// サンプルサイズ・チャンネル数を読み取り、残りのバイト列を音声データとして扱う。
+/// SoundSize・チャンネル数を読み取り、残りのバイト列を音声データとして扱う。
+/// SoundSize とフレームのフラグの対応は [`AudioFrame::is_8bit_sample`] を参照。
+/// Speex の SoundSize は読み取った値にかかわらず 1 として扱う。ペイロードは変更しない。
 /// `timestamp` はフレームのタイムスタンプとしてそのまま設定される。
 /// AAC 以外のフォーマットでは `is_aac_sequence_header` は `false` になる。
 /// 未知の音声フォーマットの場合や、AAC のパケットタイプを読み取れない場合は
@@ -82,8 +88,8 @@ pub fn decode_audio_frame(buf: &[u8], timestamp: RtmpTimestamp) -> Result<AudioF
         _ => unreachable!(),
     };
 
-    // サンプルサイズを抽出 (ビット 1)
-    let is_8bit_sample = (header & 0x02) != 0;
+    // Speex はエンコード側と同じ固定値として扱い、入力の SoundSize ビットは使わない。
+    let is_8bit_sample = format != AudioFormat::Speex && (header & 0x02) == 0;
 
     // チャンネルタイプを抽出 (ビット 0)
     let is_stereo = (header & 0x01) != 0;
