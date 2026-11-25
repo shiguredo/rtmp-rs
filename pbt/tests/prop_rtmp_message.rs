@@ -681,6 +681,95 @@ fn user_control_roundtrip() -> noprop::TestResult {
     Ok(())
 }
 
+/// 完成済みの短い User Control と、分割して受信する正しい User Control を区別する
+#[test]
+fn user_control_decode_distinguishes_truncated_payload_from_partial_input() -> noprop::TestResult {
+    use shiguredo_rtmp::error::ErrorKind;
+    use shiguredo_rtmp::rtmp_chunk::RtmpChunk;
+    use shiguredo_rtmp::rtmp_chunk_encoder::RtmpChunkEncoder;
+    use shiguredo_rtmp::rtmp_message::RtmpMessageType;
+
+    let header = RtmpMessageHeader::PCM;
+    let chunk_stream_id = RtmpChunkStreamId::new(2).expect("2 は制御用のチャンクストリーム ID");
+    // Adobe RTMP 仕様 6.2 節は単一チャンクへの収容を推奨する。ここでは受信側の組み立てを
+    // 検査するため、4 バイトのチャンクサイズを通知し、イベントを複数チャンクに分ける。
+    let chunk_size = RtmpChunkSize::new(4).expect("4 バイトは有効なチャンクサイズ");
+    let set_chunk_size = RtmpMessage::SetChunkSize {
+        header,
+        size: chunk_size,
+    };
+    let mut setup_wire = Vec::new();
+    RtmpMessageEncoder::default()
+        .encode(&mut setup_wire, chunk_stream_id, set_chunk_size.clone())
+        .expect("チャンクサイズの通知をエンコードできるはず");
+
+    let seed = noprop::seed_from_env_or_time(SEED_ENV)?;
+    noprop::Runner::new(seed).run(BOUNDARY_CASES, |ctx: &mut TestCaseContext| {
+        let event = RtmpUserControlEvent::SetBufferLength {
+            stream_id: RtmpMessageStreamId::MEDIA,
+            length: noprop::sample_u32(ctx),
+        };
+        let mut payload = Vec::new();
+        event.encode(&mut payload);
+        let short_len = noprop::sample_usize_in(ctx, (chunk_size.get() + 1)..payload.len());
+
+        for (payload, expected) in [
+            (payload[..short_len].to_vec(), Err(ErrorKind::InvalidData)),
+            // 宣言長が 0 の場合はヘッダーだけで完成する。
+            (Vec::new(), Err(ErrorKind::InvalidData)),
+            (
+                payload,
+                Ok(Some(RtmpMessage::UserControl { header, event })),
+            ),
+        ] {
+            // メッセージの宣言長は実際のペイロード長と一致させ、不足はイベント内部だけに作る。
+            let mut encoder = RtmpChunkEncoder::default();
+            encoder.set_chunk_size(chunk_size);
+            let mut wire = Vec::new();
+            encoder.encode(
+                &mut wire,
+                &RtmpChunk {
+                    chunk_stream_id,
+                    message_stream_id: header.stream_id,
+                    message_type: RtmpMessageType::UserControl,
+                    timestamp: header.timestamp,
+                    payload,
+                },
+            );
+            let mut decoder = RtmpMessageDecoder::default();
+            decoder.feed_buf(&setup_wire);
+            assert_eq!(
+                decoder
+                    .decode()
+                    .expect("チャンクサイズの通知を読み取れるはず"),
+                Some(set_chunk_size.clone()),
+                "イベント受信前にチャンクサイズの通知が受理されるはず"
+            );
+
+            // 入力を 1 バイトずつ渡し、チャンクの途中と、チャンクの境目の両方を通す。
+            let (last, prefix) = wire.split_last().expect("チャンクにはヘッダーがあるはず");
+            for byte in prefix {
+                decoder.feed_buf(core::slice::from_ref(byte));
+                assert_eq!(
+                    decoder.decode().map_err(|e| e.kind),
+                    Ok(None),
+                    "メッセージの宣言長に達するまでは追加受信を待つはず"
+                );
+            }
+
+            // 最後のバイトでメッセージが揃い、初めてイベントデータの妥当性が決まる。
+            decoder.feed_buf(core::slice::from_ref(last));
+            assert_eq!(
+                decoder.decode().map_err(|e| e.kind),
+                expected,
+                "完成したメッセージではイベントのデコード結果が返るはず"
+            );
+        }
+        Ok(())
+    })?;
+    Ok(())
+}
+
 /// Audio Message の roundtrip を検証する
 #[test]
 fn audio_roundtrip() -> noprop::TestResult {
