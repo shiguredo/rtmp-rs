@@ -143,7 +143,90 @@ fn sample_video_frame(ctx: &mut TestCaseContext) -> VideoFrame {
     }
 }
 
-/// AudioFrame の encode / decode が可逆であることを検証する
+/// PCM の SoundSize の対応を、往復ではなく独立した固定ヘッダーで検証する
+#[test]
+fn pcm_sound_size_matches_wire_bits() -> noprop::TestResult {
+    let seed = noprop::seed_from_env_or_time(SEED_ENV)?;
+    noprop::Runner::new(seed).run(CASES, |ctx: &mut TestCaseContext| {
+        let timestamp = RtmpTimestamp::from_millis(noprop::sample_u32(ctx));
+        let prefix_len = noprop::sample_usize_in(ctx, 0..64);
+        let prefix = noprop::sample_bytes_vec(ctx, prefix_len);
+        // Adobe FLV 仕様 10.1 の E.4.2.1 節: リトルエンディアン PCM、44 kHz、モノラル。
+        // ヘッダーの他のビットは固定し、8 ビットと 16 ビットの両方を毎回確認する。
+        for (is_8bit_sample, expected) in
+            [(true, &[0x3C, 0x80][..]), (false, &[0x3E, 0x34, 0x12][..])]
+        {
+            let frame = AudioFrame {
+                timestamp,
+                format: AudioFormat::LinearPcmLittleEndian,
+                sample_rate: AudioSampleRate::Khz44,
+                is_8bit_sample,
+                is_stereo: false,
+                is_aac_sequence_header: false,
+                data: expected[1..].to_vec(),
+            };
+            let sample_size = if is_8bit_sample { 8 } else { 16 };
+            let mut wire = prefix.clone();
+            encode_audio_frame(&mut wire, &frame);
+            assert_eq!(
+                wire,
+                [prefix.as_slice(), expected].concat(),
+                "{sample_size} ビット PCM の固定ワイヤ値を既存バッファに追記するはず"
+            );
+            assert_eq!(
+                decode_audio_frame(expected, timestamp)
+                    .expect("仕様どおりの PCM タグをデコードできるはず"),
+                frame,
+                "{sample_size} ビット PCM の固定ワイヤ値からフレームを得るはず"
+            );
+        }
+        Ok(())
+    })?;
+    Ok(())
+}
+
+/// Speex は受信したビットと送信フレームのフラグにかかわらず SoundSize 1 として扱う
+#[test]
+fn speex_sound_size_matches_wire_bits() -> noprop::TestResult {
+    let seed = noprop::seed_from_env_or_time(SEED_ENV)?;
+    noprop::Runner::new(seed).run(CASES, |ctx: &mut TestCaseContext| {
+        let timestamp = RtmpTimestamp::from_millis(noprop::sample_u32(ctx));
+        let len = noprop::sample_usize_in(ctx, 1..256);
+        let data = noprop::sample_bytes_vec(ctx, len);
+        // Adobe FLV 仕様 10.1 の E.4.2.1 節では、Speex のヘッダーはレート 0、サイズ 1、モノラル。
+        let mut frame = AudioFrame {
+            timestamp,
+            format: AudioFormat::Speex,
+            sample_rate: AudioSampleRate::Khz5,
+            is_8bit_sample: false,
+            is_stereo: false,
+            is_aac_sequence_header: false,
+            data,
+        };
+        let expected = [&[0xB2][..], frame.data.as_slice()].concat();
+        for input_header in [0xB0, 0xB2] {
+            let input = [&[input_header][..], frame.data.as_slice()].concat();
+            assert_eq!(
+                decode_audio_frame(&input, timestamp).expect("Speex タグを読み取れるはず"),
+                frame,
+                "Speex の入力ビットは使わず、ペイロードは保持するはず"
+            );
+        }
+        for is_8bit_sample in [true, false] {
+            frame.is_8bit_sample = is_8bit_sample;
+            let mut output = Vec::new();
+            encode_audio_frame(&mut output, &frame);
+            assert_eq!(
+                output, expected,
+                "Speex は SoundSize を 1 としてペイロードをそのまま書くはず"
+            );
+        }
+        Ok(())
+    })?;
+    Ok(())
+}
+
+/// AudioFrame の往復を、Speex の送信時の正規化を含めて検証する
 #[test]
 fn audio_frame_roundtrip() -> noprop::TestResult {
     let seed = noprop::seed_from_env_or_time(SEED_ENV)?;
@@ -151,12 +234,23 @@ fn audio_frame_roundtrip() -> noprop::TestResult {
         let frame = sample_audio_frame(ctx);
         let mut buf = Vec::new();
         encode_audio_frame(&mut buf, &frame);
+        // 往復だけでは極性の誤りを見逃す。Speex も含め、書き込んだビットを直接調べる。
+        let expected_sound_size = match (frame.format, frame.is_8bit_sample) {
+            (AudioFormat::Speex, _) | (_, false) => 0x02,
+            (_, true) => 0x00,
+        };
+        assert_eq!(
+            buf.first().map(|header| header & 0x02),
+            Some(expected_sound_size),
+            "指定した SoundSize を書くはず"
+        );
         let decoded = decode_audio_frame(&buf, frame.timestamp)
             .expect("エンコードした音声フレームのデコードは失敗しない");
-        assert_eq!(
-            decoded, frame,
-            "ラウンドトリップした音声フレームが一致しない"
-        );
+        let expected = AudioFrame {
+            is_8bit_sample: expected_sound_size == 0,
+            ..frame
+        };
+        assert_eq!(decoded, expected, "音声フレームが期待した値で往復するはず");
         Ok(())
     })?;
     Ok(())

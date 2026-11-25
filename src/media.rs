@@ -27,7 +27,10 @@ pub struct AudioFrame {
     /// サンプリングレート（5.5kHz、11kHz、22kHz、44kHz のいずれか）
     pub sample_rate: AudioSampleRate,
 
-    /// サンプルが 8 ビット（true）か 16 ビット（false）か
+    /// FLV 音声タグの SoundSize が 0（`true`）か 1（`false`）か
+    ///
+    /// 非圧縮音声ではそれぞれ 8 ビットと 16 ビットを表す。圧縮音声ではヘッダーの値に対応し、
+    /// デコード後のサンプルサイズを表さない。Speex は読み書きとも SoundSize 1 として扱う。
     pub is_8bit_sample: bool,
 
     /// 音声がステレオ（true）かモノラル（false）か

@@ -20,16 +20,17 @@
 - [CHANGE] `RtmpMessageType` に `SharedObjectAmf3`、`SharedObjectAmf0`、`Aggregate` を追加する。網羅的な `match` には分岐の追加が必要になる
   - @voluntas
 
-- [CHANGE] 受信 ACK の値や欠落による RTMP 接続の自動切断を廃止し、相手の値を `RtmpConnectionEvent::AckReceived` で通知する
-  - @voluntas
-
-- [CHANGE] `RtmpMessageChannel` の `notify_ack_received` と `set_local_ack_window_size` を削除し、`advance_send_buf` の戻り値を `()` にする
+- [CHANGE] FLV / RTMP の音声タグで `is_8bit_sample` と SoundSize の対応を `true` が 0、`false` が 1 に修正する。Speex は読み書きとも 1 として扱う
+  - 旧版の極性に合わせてフラグを反転している利用側は、その補正を外す必要がある。旧版が誤ったビットで出力した PCM は自動補正しない
   - @voluntas
 
 - [ADD] RTMP の各要素をモジュールとして公開 API に追加する
   - @voluntas
 
 - [UPDATE] `ErrorKind` から `#[non_exhaustive]` を削除する
+  - @voluntas
+
+- [FIX] RTMP ACK の計数起点の違いで誤切断される問題を修正する
   - @voluntas
 
 - [FIX] サーバーが C2 を先に受信すると S2 の送信が止まる問題を修正する
