@@ -1077,9 +1077,9 @@ fn publish_flow() -> noprop::TestResult {
     Ok(())
 }
 
-/// Play で PlayPending に遷移することを検証する
+/// 開始位置を省略した play でも、サーバーは通常どおり再生要求を通知する
 #[test]
-fn play_flow() -> noprop::TestResult {
+fn play_flow_without_start() -> noprop::TestResult {
     let seed = noprop::seed_from_env_or_time(SEED_ENV)?;
     noprop::Runner::new(seed).run(CASES, |ctx: &mut TestCaseContext| {
         // ケースごとに接続を作り直し、前のケースの状態を持ち越さない
@@ -1091,24 +1091,48 @@ fn play_flow() -> noprop::TestResult {
         let tc_url = sample_small_string(ctx);
         let transaction_id = sample_transaction_id(ctx);
         let stream_name = sample_small_string(ctx);
-        let start = noprop::sample_f64(ctx);
 
         perform_handshake(&mut server);
         drain_events(&mut server);
 
-        connect_and_create_stream(&mut server, app, flash_ver, tc_url, transaction_id);
-
-        let play = RtmpCommand::Play(RtmpPlayCommand {
+        connect_and_create_stream(
+            &mut server,
+            app.clone(),
+            flash_ver,
+            tc_url.clone(),
             transaction_id,
-            stream_name,
-            start,
-        });
-        send_command(&mut server, play).expect("play コマンドを処理できるはず");
-        let events = drain_events(&mut server);
+        );
 
-        assert!(
-            expect_state(&events, RtmpConnectionState::PlayPending),
-            "PlayPending 状態への遷移イベントが発火しなかった: {events:?}"
+        // Adobe RTMP 仕様（2012 年 12 月版）7.2.2.1 節に従い Start は送らない。
+        // 同節の play のトランザクション ID は 0。再生要求の引数が変わる場合は
+        // 最小引数の組み立てを見直す。
+        let play = RtmpMessage::Command {
+            header: RtmpMessageHeader {
+                stream_id: RtmpMessageStreamId::MEDIA,
+                timestamp: RtmpTimestamp::ZERO,
+            },
+            amf_version: AmfVersion::Amf0,
+            name: "play".to_owned(),
+            transaction_id: TransactionId::from_f64(0.0),
+            object: AmfValue::Amf0(Amf0Value::Null),
+            args: vec![AmfValue::Amf0(Amf0Value::String(stream_name.clone()))],
+        };
+        server
+            .feed_recv_buf(&encode_message(play))
+            .expect("開始位置を省略した play を処理できるはず");
+
+        assert_eq!(server.state(), RtmpConnectionState::PlayPending);
+        assert_eq!(
+            drain_events(&mut server),
+            [
+                RtmpConnectionEvent::StateChanged(RtmpConnectionState::PlayPending),
+                RtmpConnectionEvent::PlayRequested {
+                    app,
+                    tc_url,
+                    stream_name
+                }
+            ],
+            "再生待ちへの遷移と指定されたストリームの再生要求を順に通知するはず"
         );
         Ok(())
     })?;
