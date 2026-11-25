@@ -181,7 +181,16 @@ connection.advance_send_buf(send_data.len());
 | 型 | 説明 |
 |--------|------|
 | `Error` | エラー型 (kind, reason, location を含む) |
-| `ErrorKind` | エラー種別 (InvalidInput, InvalidData, InvalidState, Unsupported) |
+| `ErrorKind` | エラー種別 (`InvalidInput`、`InvalidData`、`InvalidState`、`Unsupported`、`InsufficientBuffer`) |
+
+`InsufficientBuffer` は、入力から必要なバイト数を読み取れなかったことを示します。続きの入力で再開できるかは、呼び出した API の契約によります。
+
+`AmfValue::decode` は、渡されたスライスが途中で終わっている場合、`kind` が `InsufficientBuffer` のエラーを返すことがあります。
+再試行する場合は、元の入力に続きのバイトを加えたスライスを渡してください。
+
+`RtmpMessageDecoder::decode` は、チャンクのデコードが入力不足で止まった場合に `Ok(None)` を返します。
+宣言長まで受信したメッセージの解析に失敗した場合は `Err` を返します。
+このとき `kind` が `InsufficientBuffer` でも、当該ペイロードを追加受信で補うことはできません。
 
 ## サンプル
 
