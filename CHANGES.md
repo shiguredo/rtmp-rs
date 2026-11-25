@@ -11,56 +11,5 @@
 
 ## develop
 
-- [CHANGE] MSRV (rust-version) を 1.95 に上げる
-  - @voluntas
-
-- [CHANGE] `encode_video_frame`、`RtmpMessageEncoder::encode`、`RtmpMessageChannel::feed_send_message` の戻り値を `Result<(), Error>` にする
-  - @voluntas
-
-- [CHANGE] `RtmpMessageType` に `SharedObjectAmf3`、`SharedObjectAmf0`、`Aggregate` を追加する。網羅的な `match` には分岐の追加が必要になる
-  - @voluntas
-
-- [CHANGE] FLV / RTMP の音声タグで `is_8bit_sample` と SoundSize の対応を `true` が 0、`false` が 1 に修正する。Speex は読み書きとも 1 として扱う
-  - 旧版の極性に合わせてフラグを反転している利用側は、その補正を外す必要がある。旧版が誤ったビットで出力した PCM は自動補正しない
-  - @voluntas
-
-- [ADD] RTMP の各要素をモジュールとして公開 API に追加する
-  - @voluntas
-
-- [UPDATE] `ErrorKind` から `#[non_exhaustive]` を削除する
-  - @voluntas
-
-- [FIX] RTMP ACK の計数起点の違いで誤切断される問題を修正する
-  - @voluntas
-
-- [FIX] サーバーが C2 を先に受信すると S2 の送信が止まる問題を修正する
-  - @voluntas
-
-- [FIX] RTMP URL のクエリやフラグメント内の `/` で app と stream が誤分割される問題を修正する
-  - @voluntas
-
-- [FIX] RTMP URL でブラケットなしの IPv6、不正なブラケット構造、ユーザー情報を拒否する
-  - @voluntas
-
-- [FIX] FLV の AVC 追加ヘッダーをコマンドフレームでも読み書きし、コーデックとパケットタイプが矛盾する送信を拒否する
-  - @voluntas
-
-- [FIX] FLV の AVC `CompositionTime` が符号付き 24 ビットの範囲外なら、切り詰めずに入力エラーを返す
-  - @voluntas
-
-- [FIX] Shared Object と Aggregate の型 ID を受理し、本文を読み飛ばして `MessageIgnored` を通知する
-  - @voluntas
-
-- [FIX] サーバーは初回の `connect` だけを受理し、分割受信中の ACK 送信で切断状態にならないようにする
-  - @voluntas
 
 ### misc
-
-- [UPDATE] PBT を proptest から noprop に移行する
-  - @voluntas
-
-- [UPDATE] テスト専用の `tests` モジュールを廃止し、テストを公開 API 経由に変更する
-  - @voluntas
-
-- [UPDATE] CI のツールチェーンを `rust-toolchain.toml` の MSRV に揃える
-  - @voluntas
