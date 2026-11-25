@@ -449,20 +449,33 @@ fn publish_invalid_type_rejected() -> noprop::TestResult {
     Ok(())
 }
 
-/// play の開始位置が不足している場合に拒否されることを検証する
+/// play で開始位置を省略すると仕様の既定値を使う
 #[test]
-fn play_missing_start_rejected() -> noprop::TestResult {
+fn play_missing_start_uses_default() -> noprop::TestResult {
     let seed = noprop::seed_from_env_or_time(SEED_ENV)?;
     noprop::Runner::new(seed).run(CASES, |ctx: &mut TestCaseContext| {
         let transaction_id = sample_transaction_id(ctx);
         let stream_name = sample_small_string(ctx);
-        let result = RtmpCommand::from_message(
+        let command = RtmpCommand::from_message(
             "play",
             transaction_id,
             AmfValue::Amf0(Amf0Value::Null),
-            vec![AmfValue::Amf0(Amf0Value::String(stream_name))],
+            vec![AmfValue::Amf0(Amf0Value::String(stream_name.clone()))],
+        )
+        .expect("開始位置を省略した play は受理されるはず");
+        let RtmpCommand::Play(command) = command else {
+            panic!("play コマンドが返るはず");
+        };
+        // Adobe RTMP 仕様（2012 年 12 月版）7.2.2.1 節の既定値。仕様が変わる場合は見直す。
+        assert_eq!(command.start, -2.0, "省略時は既定の開始位置を使うはず");
+        assert_eq!(
+            command.stream_name, stream_name,
+            "ストリーム名を保持するはず"
         );
-        assert!(result.is_err(), "開始位置が不足した play が受理された");
+        assert_eq!(
+            command.transaction_id, transaction_id,
+            "トランザクション ID を保持するはず"
+        );
         Ok(())
     })?;
     Ok(())

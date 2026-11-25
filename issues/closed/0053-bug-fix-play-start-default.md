@@ -1,7 +1,7 @@
 # play の開始位置を省略した再生要求を受理する
 
 - Created: 2026-11-25
-- Completed: {YYYY-MM-DD}
+- Completed: 2026-11-25
 - Branch: feature/fix-play-start-default
 - Polished: 2026-11-25
 
@@ -35,3 +35,9 @@
 - サーバーの公開 API で、開始位置を省略した `play` を送ると `PlayPending` へ遷移し、`PlayRequested` が通知される。
 - 開始位置を明示した既存の往復と、数値でない値を拒否する挙動に回帰がない。省略を拒否する既存の性質テストは、省略時の既定値を確認する内容に置き換わっている。
 - 上記を公開 API の性質テストで検証する。
+
+## 解決方法
+
+1. `RtmpPlayCommand::from_message` で、開始位置の引数がある場合は数値として読み取り、ない場合だけ仕様の既定値 `-2.0` を使うようにした。明示された値が数値でない場合の `InvalidData` と、ストリーム名が必須であることは変更していない。
+2. `RtmpPlayCommand::start` と `RtmpCommand::from_message` の公開説明を、省略時の既定値と省略可能な引数の扱いに合わせた。送信する `play` コマンドの形式と再生方針は変更していない。
+3. `prop_rtmp_command` の開始位置の省略を拒否していた性質テストを、省略時の既定値と名前・トランザクション ID の保持を確認する内容に置き換えた。`prop_rtmp_server_connection` に、開始位置を省略した `play` で `PlayPending` へ遷移し `PlayRequested` が通知されることを確認する性質テストを追加した。

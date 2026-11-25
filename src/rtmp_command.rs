@@ -255,7 +255,8 @@ impl RtmpCommand {
     /// 受信したコマンドメッセージの構成要素からコマンドを生成する
     ///
     /// コマンド名に応じて対応する型に変換する。クレートが明示的に扱わないコマンド名の場合は
-    /// [`RtmpCommand::Ignore`] として返す。引数が不足している場合や型が不正な場合はエラーを返す。
+    /// [`RtmpCommand::Ignore`] として返す。必須の引数が不足している場合や型が不正な場合は
+    /// エラーを返す。省略可能な引数は、コマンドごとの既定値を使う。
     ///
     /// # 引数
     ///
@@ -479,8 +480,8 @@ pub struct RtmpPlayCommand {
 
     /// 再生を開始する位置（秒単位）
     ///
-    /// RTMP 仕様 7.2.2.1 節では、-1 の場合はライブストリームのみを再生し、
-    /// 0 以上の場合は録画ストリームをその位置から再生すると定義されている。
+    /// RTMP 仕様 7.2.2.1 節では、省略時の既定値は `-2`。ライブを優先し、なければ録画を探し、
+    /// どちらもなければライブ配信の開始を待つ。`-1` はライブのみ、`0` 以上は録画の開始位置を指定する。
     pub start: f64,
 }
 
@@ -495,10 +496,12 @@ impl RtmpPlayCommand {
             .ok_or_else(|| Error::invalid_data("play: missing stream name"))?
             .expect_str()?
             .to_string();
-        let start = args
-            .get(1)
-            .ok_or_else(|| Error::invalid_data("play: missing start position"))?
-            .expect_number()?;
+        // Adobe RTMP 仕様（2012 年 12 月版）7.2.2.1 節の既定値は、開始位置を省略した場合だけ適用する。
+        // Start の省略時の規定が変わった場合は見直す。
+        let start = match args.get(1) {
+            Some(value) => value.expect_number()?,
+            None => -2.0,
+        };
         Ok(Self {
             transaction_id,
             stream_name,
