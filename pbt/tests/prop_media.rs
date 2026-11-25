@@ -18,6 +18,7 @@ fn sample_audio_format(ctx: &mut TestCaseContext) -> AudioFormat {
     noprop::sample_choice(
         ctx,
         &[
+            AudioFormat::LinearPcmPlatformEndian,
             AudioFormat::Adpcm,
             AudioFormat::Mp3,
             AudioFormat::LinearPcmLittleEndian,
@@ -226,16 +227,15 @@ fn video_frame_clone() -> noprop::TestResult {
     Ok(())
 }
 
-/// AudioFormat の判別値が FLV の仕様範囲にあることを検証する
+/// AudioFormat の判別値がライブラリの扱う範囲にあることを検証する
 #[test]
 fn audio_format_values() -> noprop::TestResult {
     let seed = noprop::seed_from_env_or_time(SEED_ENV)?;
     noprop::Runner::new(seed).run(CASES, |ctx: &mut TestCaseContext| {
         let value = sample_audio_format(ctx) as u8;
-        // 有効な値: 1-8, 10, 11, 14, 15
         assert!(
-            matches!(value, 1..=8 | 10 | 11 | 14 | 15),
-            "音声フォーマットの値 {value} が有効範囲外"
+            matches!(value, 0..=8 | 10 | 11 | 14 | 15),
+            "音声フォーマットの判別値 {value} が対応範囲外"
         );
         Ok(())
     })?;

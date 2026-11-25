@@ -192,6 +192,7 @@ fn sample_audio_format(ctx: &mut TestCaseContext) -> AudioFormat {
     noprop::sample_choice(
         ctx,
         &[
+            AudioFormat::LinearPcmPlatformEndian,
             AudioFormat::Adpcm,
             AudioFormat::Mp3,
             AudioFormat::LinearPcmLittleEndian,
