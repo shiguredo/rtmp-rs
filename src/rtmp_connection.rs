@@ -25,6 +25,9 @@ pub struct RtmpConnectionOptions {
     pub chunk_size: RtmpChunkSize,
 
     /// 相手へ通知する確認応答ウィンドウサイズ（デフォルト: 5,000,000 バイト）
+    ///
+    /// Set Peer Bandwidth への応答では、この値を再通知する。相手が指定したサイズや
+    /// 制限種別を受諾する応答ではない。このライブラリは受信 ACK に基づく送信量の制限を行わない。
     pub ack_window_size: u32,
 }
 
@@ -70,9 +73,9 @@ pub enum RtmpConnectionEvent {
     /// 映像フレームを受信した
     VideoReceived(VideoFrame),
 
-    /// 相手から確認応答 (ACK) を受信した
+    /// 相手からの確認応答 (ACK) を処理した
     ///
-    /// 相手が通知した値をそのまま返す。自分の送信済みバイト数に換算せず、
+    /// 重複や後退も含め、相手が通知した値を受信順に返す。自分の送信済みバイト数に換算せず、
     /// 送信可否や接続状態の判定には使わない。
     AckReceived {
         /// 通信上の 32 ビットのシーケンス番号

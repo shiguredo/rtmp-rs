@@ -182,9 +182,20 @@ fn message_channel_send_roundtrip() -> noprop::TestResult {
                 .expect("生成した RTMP メッセージを送信バッファに追加できるはず");
         }
 
+        // 一部ずつ送信済みにしても、未送信部分を欠落・重複させずに取り出せるはず。
         let buf = channel.send_buf().to_vec();
+        let split = noprop::sample_usize_in(ctx, 1..buf.len());
         let mut decoder = RtmpMessageDecoder::default();
-        decoder.feed_buf(&buf);
+        decoder.feed_buf(&channel.send_buf()[..split]);
+        channel.advance_send_buf(split);
+        assert_eq!(
+            channel.send_buf(),
+            &buf[split..],
+            "未送信部分だけが残るはず"
+        );
+        decoder.feed_buf(channel.send_buf());
+        channel.advance_send_buf(buf.len() - split);
+        assert!(channel.send_buf().is_empty(), "すべて送信済みのはず");
 
         let mut decoded = Vec::new();
         while let Some(message) = decoder

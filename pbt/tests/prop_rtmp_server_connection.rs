@@ -320,6 +320,90 @@ fn finishes_s2_even_if_c2_arrives_first() -> noprop::TestResult {
     Ok(())
 }
 
+/// ハンドシェイクの送信済み通知が遅れても、双方が受信 ACK を 1 回だけ通知する
+#[test]
+fn early_ack_is_reported_before_handshake_send_confirmation() -> noprop::TestResult {
+    use shiguredo_rtmp::rtmp_client_connection::RtmpPublishClientConnection;
+    use shiguredo_rtmp::rtmp_url::RtmpUrl;
+
+    let seed = noprop::seed_from_env_or_time(SEED_ENV)?;
+    noprop::Runner::new(seed).run(CASES, |ctx: &mut TestCaseContext| {
+        let url = RtmpUrl::parse("rtmp://example.invalid/live/stream").expect("有効な URL のはず");
+        let mut client = RtmpPublishClientConnection::new(url);
+        let mut server = RtmpServerConnection::new();
+        assert_eq!(
+            client.next_event(),
+            Some(RtmpConnectionEvent::StateChanged(
+                RtmpConnectionState::Handshaking
+            )),
+            "クライアントは最初にハンドシェイク開始を通知するはず"
+        );
+        drain_events(&mut server);
+
+        server
+            .feed_recv_buf(client.send_buf())
+            .expect("サーバーは C0 / C1 を受理するはず");
+        client.advance_send_buf(client.send_buf().len());
+        let server_handshake_len = server.send_buf().len();
+        client
+            .feed_recv_buf(server.send_buf())
+            .expect("クライアントは S0 / S1 / S2 を受理するはず");
+
+        let to_server = noprop::sample_u32(ctx);
+        let to_client = noprop::sample_u32(ctx);
+        let mut request = client.send_buf().to_vec();
+        let client_handshake_len = request.len();
+        request.extend(encode_message_on(2, RtmpMessage::ack(to_server)));
+        // 双方のハンドシェイクは転送済みだが、書き込み完了の通知より先に相手の ACK を処理する。
+        server
+            .feed_recv_buf(&request)
+            .expect("サーバーは C2 と後続 ACK を受理するはず");
+        client
+            .feed_recv_buf(&encode_message_on(2, RtmpMessage::ack(to_client)))
+            .expect("クライアントは C2 の送信済み通知前でも ACK を受理するはず");
+
+        let connecting = RtmpConnectionEvent::StateChanged(RtmpConnectionState::Connecting);
+        assert_eq!(
+            drain_events(&mut server),
+            [
+                connecting.clone(),
+                RtmpConnectionEvent::AckReceived {
+                    sequence_number: to_server
+                }
+            ],
+            "サーバーは接続状態の遷移に続いて ACK を通知するはず"
+        );
+        assert_eq!(
+            client.next_event(),
+            Some(connecting),
+            "クライアントは接続状態の遷移を通知するはず"
+        );
+        assert_eq!(
+            client.next_event(),
+            Some(RtmpConnectionEvent::AckReceived {
+                sequence_number: to_client
+            }),
+            "クライアントも生の値を通知するはず"
+        );
+        assert_eq!(client.next_event(), None, "ほかの通知はないはず");
+
+        server.advance_send_buf(server_handshake_len);
+        client.advance_send_buf(client_handshake_len);
+        assert_eq!(
+            server.next_event(),
+            None,
+            "送信済み通知時に ACK を再通知しないはず"
+        );
+        assert_eq!(
+            client.next_event(),
+            None,
+            "送信済み通知時に ACK を再通知しないはず"
+        );
+        Ok(())
+    })?;
+    Ok(())
+}
+
 mod connect {
     use shiguredo_rtmp::rtmp_connection::RtmpConnectionOptions;
     use shiguredo_rtmp::rtmp_message_decoder::RtmpMessageDecoder;

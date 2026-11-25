@@ -139,7 +139,9 @@ impl RtmpServerConnection {
                 // message decoder のレイヤーでハンドリングされるのでここでは何もしなくていい
             }
             RtmpMessage::SetPeerBandwidth { .. } => {
-                // ウィンドウサイズは応答するが、受信 ACK から未確認送信量を推定して制限しない。
+                // Adobe RTMP 仕様（2012 年 12 月版）5.4.5 節は Hard / Soft の送信制限を推奨する。
+                // 計数起点や折り返しの違いで正常な送信を止めないよう、未確認送信量を推定して制限しない。
+                // 受信 ACK から未確認量を一意に求める方法が仕様で明確になった場合は見直す。
                 let message = RtmpMessage::win_ack_size(self.options.ack_window_size);
                 self.message_channel.feed_send_message(message)?;
             }
@@ -315,7 +317,9 @@ impl RtmpServerConnection {
         }
     }
 
-    /// 送信バッファから指定バイト数を送信済みとしてマークする
+    /// 送信済みのバイトを送信バッファから消費する。
+    ///
+    /// `n` には [`Self::send_buf()`] の先頭から実際に送信できたバイト数を指定する。
     pub fn advance_send_buf(&mut self, n: usize) {
         if !self.handshake.is_send_complete() {
             self.handshake.advance_send_buf(n);
@@ -481,12 +485,9 @@ impl RtmpServerConnection {
         self.message_channel.feed_send_message(message)
     }
 
-    /// 次のイベントを取得する
+    /// 次のイベントをキューから取り出す。キューが空なら `None` を返す。
     ///
-    /// 接続状態の変化やクライアントからのリクエストなど、
-    /// 処理すべきイベントがある場合はそれを返す
-    ///
-    /// イベントがない場合は `None` を返す
+    /// 受信処理後は `None` になるまで呼び出す。診断に使わない ACK 通知は取り出して破棄してよい。
     pub fn next_event(&mut self) -> Option<RtmpConnectionEvent> {
         self.event_queue.pop_front()
     }
