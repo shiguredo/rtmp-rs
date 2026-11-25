@@ -1,7 +1,7 @@
 # `ErrorKind::InsufficientBuffer` の公開契約を明確にする
 
 - Created: 2026-11-22
-- Completed: {YYYY-MM-DD}
+- Completed: 2026-11-25
 - Branch: feature/fix-error-kind-public-contract
 - Polished: 2026-11-22
 
@@ -33,6 +33,6 @@
 
 ## 解決方法
 
-1. `src/error.rs` の `ErrorKind::InsufficientBuffer` から `#[doc(hidden)]` を外して意味を説明し、`ErrorKind` に網羅例を追加する。
-2. `README.md` に 5 種目と、追加の入力を待つべきかどうかを各 API の契約で判断することを明記する。
-3. rustdoc の生成結果、doc テスト、既存の AMF とメッセージデコーダーのテストを確認する。
+- `ErrorKind::InsufficientBuffer` から `#[doc(hidden)]` を取り除き、必要なバイト数の不足を表すことを公開文書と README に明記した。バリアントの追加・削除やエラー分類の変更はしていない。
+- AMF のスライスを再試行する場合と、RTMP のチャンク入力を待つ場合を区別した。RTMP では、宣言長まで受信したペイロードの解析エラーが返っても、そのペイロードは続きの入力で補えない。
+- 生成した公開文書と README で 5 種を確認し、外部クレートとして網羅的に分岐する文書テストが通った。既存の AMF とチャンク・メッセージのテストも通過した。
