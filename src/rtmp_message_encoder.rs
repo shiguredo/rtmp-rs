@@ -37,8 +37,10 @@ impl RtmpMessageEncoder {
     ///
     /// # エラー
     ///
-    /// 映像フレームが [`crate::flv::encode_video_frame`] の入力条件を満たさない場合は、
-    /// `buf` とチャンクのエンコード状態を変更せずにエラーを返す。
+    /// 音声・映像メッセージでヘッダーとフレームのタイムスタンプが一致しない場合は、
+    /// `kind` が [`crate::error::ErrorKind::InvalidInput`] のエラーを返す。
+    /// 映像フレームが [`crate::flv::encode_video_frame`] の入力条件を満たさない場合もエラーを返す。
+    /// いずれの場合も `buf` とチャンクのエンコード状態は変更しない。
     pub fn encode(
         &mut self,
         buf: &mut Vec<u8>,
@@ -74,6 +76,23 @@ impl RtmpMessageEncoder {
         message: RtmpMessage,
     ) -> Result<RtmpChunk, Error> {
         let header = message.header();
+        // Adobe RTMP 仕様 4 節・5.1 節のメッセージタイムスタンプは 1 つの 32 ビット値。
+        // 片方を黙って捨てないように送信前に一致を要求する。タイムスタンプの表現を変更するときは見直す。
+        let frame_timestamp = match &message {
+            RtmpMessage::Audio { frame, .. } => Some(frame.timestamp),
+            RtmpMessage::Video { frame, .. } => Some(frame.timestamp),
+            _ => None,
+        };
+        if let Some(frame_timestamp) = frame_timestamp
+            && frame_timestamp != header.timestamp
+        {
+            return Err(Error::invalid_input(format!(
+                "RTMP message header timestamp ({} ms) does not match frame timestamp ({} ms)",
+                header.timestamp.as_millis(),
+                frame_timestamp.as_millis(),
+            )));
+        }
+
         let message_type = message.message_type();
         let mut payload = Vec::new();
         self.encode_message_payload(&mut payload, message)?;
