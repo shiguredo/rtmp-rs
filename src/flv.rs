@@ -58,6 +58,8 @@ pub fn decode_audio_frame(buf: &[u8], timestamp: RtmpTimestamp) -> Result<AudioF
     // オーディオフォーマットを抽出 (ビット 7-4)
     let format_bits = (header >> 4) & 0x0F;
     let format = match format_bits {
+        // Adobe FLV 仕様 10.1 の E.4.2.1 節のレガシー音声形式。別のタグ仕様を採用する場合は対応を見直す。
+        0 => AudioFormat::LinearPcmPlatformEndian,
         1 => AudioFormat::Adpcm,
         2 => AudioFormat::Mp3,
         3 => AudioFormat::LinearPcmLittleEndian,

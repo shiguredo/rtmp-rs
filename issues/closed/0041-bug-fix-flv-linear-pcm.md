@@ -1,8 +1,8 @@
 # FLV の SoundFormat 0（Linear PCM, platform-endian）を受理する
 
 - Created: 2026-11-22
-- Completed: {YYYY-MM-DD}
-- Branch: feature/fix-flv-linear-pcm
+- Completed: 2026-11-25
+- Branch: feature/change-flv-linear-pcm
 - Polished: 2026-11-22
 
 ## 目的
@@ -24,7 +24,7 @@
 - `AudioFormat::LinearPcmPlatformEndian = 0` を追加する。`decode_audio_frame` の SoundFormat 判定で 0 を新バリアントに対応付ける。`encode_audio_frame` は既存の列挙値から上位 4 ビットを作る処理で 0 を出力する。既存バリアントの判別値と、形式 0 以外の SoundFormat の対応付けは変更しない。
 - 形式 0 の 16 ビットサンプルのバイト順は、[Adobe FLV 仕様 10.1 §E.4.2.1](https://veovera.github.io/enhanced-rtmp/docs/legacy/video-file-format-v10-1-spec.pdf#page=77) に従い、ファイルを作成したプラットフォームのバイト順に依存する。実行ホストのバイト順を使った変換や推定、形式 3 への正規化、サンプルの妥当性検査は行わず、`AudioFrame::data` をそのまま扱う。形式 0 は明示的に指定された場合だけ出力し、新規データの生成には Adobe 仕様の非推奨を踏まえ形式 3 を案内する。
 - SoundSize の共通規則を修正する 0023 を先に実装する。本 issue では SoundSize の条件分岐を追加しない。実装順は 0023 → 本 issue → Enhanced Audio の 0009 とする。本 issue は現行の公開型を前提とする。0009 の形式 0 を除外・拒否する記述は本修正後には適用しない。0009 に着手する前にその設計と非回帰の基準を同期し、形式 0 の受理を維持する。
-- `AudioFormat` は `#[non_exhaustive]` ではなく、公開列挙型への追加は利用側の網羅的な `match` に影響する。実装時に `CHANGES.md` の `develop` に `[CHANGE]` を記載する。
+- `AudioFormat` は `#[non_exhaustive]` ではないため、利用側の網羅的な `match` には新しい分岐が必要になる。
 
 ## 完了条件
 
@@ -33,7 +33,7 @@
 
 ## 解決方法
 
-1. `src/media.rs` の `AudioFormat` に `LinearPcmPlatformEndian = 0` を追加し、形式 0 の表現と非推奨を doc コメント（`///`）で説明する。判別値の根拠は仕様名・節番号と将来の仕様変更の可能性を実装コメント（`//`）で示す。
-2. `src/flv.rs` の `decode_audio_frame` の判定に 0 を追加し、既存の `encode_audio_frame` でその判別値が出ることを確認する。
-3. 固定バイト列の確認を追加し、`prop_flv` と `prop_rtmp_message` の `sample_audio_format` に形式 0 を加える。`prop_media` の同サンプラーと `audio_format_values` の許容値も更新する。
-4. `CHANGES.md` に `[CHANGE]` として記載する。
+- `AudioFormat::LinearPcmPlatformEndian = 0` を追加した。エンコーダーは既存のヘッダー処理で形式 0 を書き、デコーダーは形式 0 を同バリアントとして読み取る。音声データを変換せず、形式 3 や他の音声形式は変更しない。
+- 公開文書に、16 ビットのバイト順は作成元に依存し、新規データには形式 3 を使うことを記載した。既存の 16 ビット PCM を形式 3 にする場合は、形式番号だけでなくサンプルをリトルエンディアンにする必要がある。
+- 8 ビットと 16 ビットの固定バイト列をエンコード・デコードそれぞれで照合した。FLV と RTMP の往復性質テストに形式 0 を追加し、既存の形式が変わらないことも確認した。
+- `AudioFormat` を網羅する `match` には新しい分岐が必要になる。

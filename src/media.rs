@@ -159,6 +159,16 @@ pub enum VideoCodec {
 /// エンコーディングに使用される音声フォーマット（コーデック）
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum AudioFormat {
+    // Adobe FLV 仕様 10.1 の E.4.2.1 節ではプラットフォーム依存の Linear PCM は SoundFormat 0。
+    // 音声タグの仕様を変更するときは、読み取り側の対応と合わせて判別値を見直す。
+    /// 作成時のプラットフォームのバイト順を使う Linear PCM（FLV の SoundFormat 0）
+    ///
+    /// 16 ビットサンプルのバイト順はファイルを作成したプラットフォームに依存する。
+    /// ライブラリはサンプルのバイト順を推定・変換せず、音声データをそのまま読み書きする。
+    /// 既存データとの互換性のための形式であり、新規データには [`Self::LinearPcmLittleEndian`] を使う。
+    /// 既存の 16 ビット PCM を形式 3 に変える場合は、サンプルをリトルエンディアンにしてから形式を指定する。
+    LinearPcmPlatformEndian = 0,
+
     /// ADPCM コーデック
     Adpcm = 1,
 

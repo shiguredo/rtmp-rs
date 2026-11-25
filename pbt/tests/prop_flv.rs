@@ -21,6 +21,7 @@ fn sample_audio_format(ctx: &mut TestCaseContext) -> AudioFormat {
     noprop::sample_choice(
         ctx,
         &[
+            AudioFormat::LinearPcmPlatformEndian,
             AudioFormat::Adpcm,
             AudioFormat::Mp3,
             AudioFormat::LinearPcmLittleEndian,
@@ -151,14 +152,19 @@ fn pcm_sound_size_matches_wire_bits() -> noprop::TestResult {
         let timestamp = RtmpTimestamp::from_millis(noprop::sample_u32(ctx));
         let prefix_len = noprop::sample_usize_in(ctx, 0..64);
         let prefix = noprop::sample_bytes_vec(ctx, prefix_len);
-        // Adobe FLV 仕様 10.1 の E.4.2.1 節: リトルエンディアン PCM、44 kHz、モノラル。
-        // ヘッダーの他のビットは固定し、8 ビットと 16 ビットの両方を毎回確認する。
-        for (is_8bit_sample, expected) in
-            [(true, &[0x3C, 0x80][..]), (false, &[0x3E, 0x34, 0x12][..])]
-        {
+        // Adobe FLV 仕様 10.1 の E.4.2.1 節: PCM、44 kHz、モノラル。
+        // 形式 0 と 3 の両方で 8 / 16 ビットを確認する。16 ビットのバイト列は形式間で逆にし、
+        // いずれもバイト順を変換せずにそのまま保持することを確かめる。
+        use AudioFormat::{LinearPcmLittleEndian, LinearPcmPlatformEndian};
+        for (format, is_8bit_sample, expected) in [
+            (LinearPcmPlatformEndian, true, &[0x0C, 0x12][..]),
+            (LinearPcmPlatformEndian, false, &[0x0E, 0x12, 0x34][..]),
+            (LinearPcmLittleEndian, true, &[0x3C, 0x80][..]),
+            (LinearPcmLittleEndian, false, &[0x3E, 0x34, 0x12][..]),
+        ] {
             let frame = AudioFrame {
                 timestamp,
-                format: AudioFormat::LinearPcmLittleEndian,
+                format,
                 sample_rate: AudioSampleRate::Khz44,
                 is_8bit_sample,
                 is_stereo: false,
@@ -171,13 +177,13 @@ fn pcm_sound_size_matches_wire_bits() -> noprop::TestResult {
             assert_eq!(
                 wire,
                 [prefix.as_slice(), expected].concat(),
-                "{sample_size} ビット PCM の固定ワイヤ値を既存バッファに追記するはず"
+                "{format:?} の {sample_size} ビット PCM の固定ワイヤ値を既存バッファに追記するはず"
             );
             assert_eq!(
                 decode_audio_frame(expected, timestamp)
                     .expect("仕様どおりの PCM タグをデコードできるはず"),
                 frame,
-                "{sample_size} ビット PCM の固定ワイヤ値からフレームを得るはず"
+                "{format:?} の {sample_size} ビット PCM の固定ワイヤ値からフレームを得るはず"
             );
         }
         Ok(())
