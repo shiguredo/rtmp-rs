@@ -1,8 +1,10 @@
 # rtmp-rs
 
-[![shiguredo_rtmp](https://img.shields.io/crates/v/shiguredo_rtmp.svg)](https://crates.io/crates/shiguredo_rtmp)
-[![Documentation](https://docs.rs/shiguredo_rtmp/badge.svg)](https://docs.rs/shiguredo_rtmp)
+[![crates.io](https://img.shields.io/crates/v/shiguredo_rtmp.svg)](https://crates.io/crates/shiguredo_rtmp)
+[![docs.rs](https://docs.rs/shiguredo_rtmp/badge.svg)](https://docs.rs/shiguredo_rtmp)
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
+[![GitHub Actions](https://github.com/shiguredo/rtmp-rs/actions/workflows/ci.yml/badge.svg)](https://github.com/shiguredo/rtmp-rs/actions/workflows/ci.yml)
+[![Discord](https://img.shields.io/badge/Discord-%235865F2.svg?logo=discord&logoColor=white)](https://discord.gg/shiguredo)
 
 ## About Shiguredo's open source software
 
@@ -24,223 +26,203 @@ Rust で実装された依存 0 かつ `no_std` に対応した Sans I/O な RTM
 - 依存ライブラリ 0
 - `no_std` 対応
 
+## できること
+
+- RTMP サーバーに接続して、映像と音声を配信する
+- RTMP サーバーに接続して、配信中の映像と音声を受け取る
+- RTMP サーバーを実装して、配信や再生を受け付ける
+- RTMP のメッセージや AMF0 / AMF3、FLV の音声 / 映像タグを変換する
+
 ## 使い方
 
-### クライアント (配信)
+このライブラリはソケット通信を行いません。
+TCP / TLS の接続は利用側で用意し、受信したバイト列を接続オブジェクトに渡し、接続オブジェクトが送りたいバイト列をソケットに書きます。
+
+```rust
+// connection は配信 / 再生 / サーバーの接続オブジェクト
+// socket は TCP / TLS のソケット
+// buf は受信用のバッファ
+
+// 配信なら Publishing (配信中)、再生なら Playing (再生中) を目標にする
+let target_state = RtmpConnectionState::Publishing;
+
+// 目標の状態になるまで、送信と受信を繰り返す
+loop {
+    // 1. 接続が送りたいデータをソケットに書く
+    let data = connection.send_buf();
+    socket.write_all(data)?;
+    connection.advance_send_buf(data.len());
+
+    // 2. ソケットから読んだデータを接続に渡す
+    //    buf は受信用のバッファ
+    let n = socket.read(&mut buf)?;
+    if n == 0 {
+        // 接続が切れた
+        break;
+    }
+    connection.feed_recv_buf(&buf[..n])?;
+
+    // 3. 接続に起きた出来事を処理する
+    while let Some(_event) = connection.next_event() {
+        // イベントの種類に応じて処理する
+    }
+
+    // 4. 目標の状態になったら接続完了
+    if connection.state() == target_state {
+        break;
+    }
+}
+```
+
+### 配信する
+
+RTMP サーバーに接続して、映像と音声を配信できます。
+接続が完了すると、映像フレームと音声フレームを送信できます。
 
 ```rust
 use shiguredo_rtmp::{RtmpPublishClientConnection, RtmpUrl};
 
-// 配信用クライアント接続を作成
+// 配信先の URL を解析する
 let url = RtmpUrl::parse("rtmp://localhost:1935/live/stream")?;
+
+// 配信クライアントを作る
 let mut connection = RtmpPublishClientConnection::new(url);
 
-// 送信バッファを取得してソケットに書き込む
-let send_data = connection.send_buf();
-// send_data を送信...
-connection.advance_send_buf(send_data.len());
+// 上のループで Publishing (配信中) まで進める
+// (配信クライアントの場合は target_state を Publishing にする)
 
-// 受信データを feed
-// connection.feed_recv_buf(&received_data)?;
-
-// イベントを処理
-// while let Some(event) = connection.next_event() { ... }
-
-// 映像/音声フレームを送信
+// 映像フレームを送る
+// タイムスタンプ、フレームタイプ、コーデック、データを指定する
 // connection.send_video(video_frame)?;
+
+// 音声フレームを送る
+// タイムスタンプ、音声フォーマット、サンプルレート、データを指定する
 // connection.send_audio(audio_frame)?;
 ```
 
-### クライアント (再生)
+### 再生する
+
+RTMP サーバーに接続して、配信中の映像と音声を受け取れます。
+接続が完了すると、音声フレームと映像フレームがイベントとして届きます。
 
 ```rust
-use shiguredo_rtmp::{RtmpPlayClientConnection, RtmpUrl};
+use shiguredo_rtmp::{RtmpConnectionEvent, RtmpPlayClientConnection, RtmpUrl};
 
-// 再生用クライアント接続を作成
+// 再生先の URL を解析する
 let url = RtmpUrl::parse("rtmp://localhost:1935/live/stream")?;
+
+// 再生クライアントを作る
 let mut connection = RtmpPlayClientConnection::new(url);
 
-// 送信バッファを取得してソケットに書き込む
-let send_data = connection.send_buf();
-// send_data を送信...
-connection.advance_send_buf(send_data.len());
+// 上のループで Playing (再生中) まで進める
+// (再生クライアントの場合は target_state を Playing にする)
 
-// 受信データを feed
-// connection.feed_recv_buf(&received_data)?;
-
-// イベントを処理 (映像/音声フレーム受信など)
-// while let Some(event) = connection.next_event() { ... }
-```
-
-### サーバー
-
-```rust
-use shiguredo_rtmp::{RtmpServerConnection, RtmpConnectionEvent};
-
-// サーバー接続を作成
-let mut connection = RtmpServerConnection::new();
-
-// 受信データを feed
-// connection.feed_recv_buf(&received_data)?;
-
-// イベントを処理
+// 届いたイベントを処理する
 while let Some(event) = connection.next_event() {
     match event {
-        RtmpConnectionEvent::PublishRequested { app, stream_name, .. } => {
-            // 配信要求を許可/拒否
-            // connection.accept()?;
-            // connection.reject("reason")?;
-        }
-        RtmpConnectionEvent::PlayRequested { app, stream_name, .. } => {
-            // 再生要求を許可/拒否
-            // connection.accept()?;
-        }
         RtmpConnectionEvent::VideoReceived(frame) => {
-            // 映像フレームを受信
+            // 映像フレームをデコードや描画に渡す
         }
         RtmpConnectionEvent::AudioReceived(frame) => {
-            // 音声フレームを受信
+            // 音声フレームを再生に渡す
         }
-        _ => {}
+        _ => {
+            // 接続状態の変化など
+        }
+    }
+}
+```
+
+### サーバーを実装する
+
+RTMP サーバーを実装できます。
+1 つの接続ごとにサーバー接続を作り、配信要求や再生要求を許可または拒否します。
+
+```rust
+use shiguredo_rtmp::{RtmpConnectionEvent, RtmpServerConnection};
+
+// クライアント 1 つ分のサーバー接続を作る
+let mut connection = RtmpServerConnection::new();
+
+// ソケットから読んだデータを接続に渡す
+connection.feed_recv_buf(&buf[..n])?;
+
+// 接続に起きた出来事を処理する
+while let Some(event) = connection.next_event() {
+    match event {
+        RtmpConnectionEvent::PublishRequested { .. } => {
+            // 配信を許可する
+            connection.accept()?;
+            // 拒否する場合は理由を付けて reject する
+            // connection.reject("already publishing")?;
+        }
+        RtmpConnectionEvent::PlayRequested { .. } => {
+            // 再生を許可する
+            connection.accept()?;
+        }
+        RtmpConnectionEvent::VideoReceived(_frame) => {
+            // 配信された映像を、再生中の接続へ転送する
+        }
+        RtmpConnectionEvent::AudioReceived(_frame) => {
+            // 配信された音声を、再生中の接続へ転送する
+        }
+        _ => {
+            // 接続状態の変化など
+        }
     }
 }
 
-// 送信バッファを取得してソケットに書き込む
-let send_data = connection.send_buf();
-// send_data を送信...
-connection.advance_send_buf(send_data.len());
+// 接続が送りたいデータをソケットに書く
+let data = connection.send_buf();
+socket.write_all(data)?;
+connection.advance_send_buf(data.len());
+
+// 実際は、受信、イベント処理、送信を繰り返す
+```
+
+### エラー
+
+処理に失敗するとエラーが返ります。
+
+```rust
+// 入力が途中で終わった場合
+// AmfValue::decode は InsufficientBuffer (入力不足) を返すことがある
+match AmfValue::decode(input, AmfVersion::Amf0) {
+    Ok((consumed, value)) => {
+        // 値が取り出せた
+    }
+    Err(error) if error.kind == ErrorKind::InsufficientBuffer => {
+        // 続きのバイト列を加えて再試行する
+    }
+    Err(error) => {
+        // 入力が不正
+    }
+}
+```
+
+```rust
+// チャンクからメッセージを取り出す場合
+match decoder.decode() {
+    Ok(Some(message)) => {
+        // メッセージが揃った
+    }
+    Ok(None) => {
+        // 入力が足りない。続きのバイト列を追加して再試行する
+    }
+    Err(error) => {
+        // 解析に失敗した
+        // 宣言長まで受信済みのメッセージの解析失敗は、追加受信では補えない
+    }
+}
 ```
 
 ## 公開 API
 
-### モジュール構成
-
-| モジュール | 説明 |
-|------------|------|
-| `amf` | AMF0 / AMF3 の共通表現 |
-| `amf0` | AMF0 のエンコード / デコード |
-| `amf3` | AMF3 のエンコード / デコード |
-| `error` | エラー型 |
-| `flv` | FLV 形式の音声 / 映像フレームの変換 |
-| `media` | 音声フレーム / 映像フレームとコーデック情報 |
-| `rtmp_chunk` | チャンクストリーム ID / チャンクサイズ / チャンク |
-| `rtmp_chunk_decoder` | チャンクのデコード |
-| `rtmp_chunk_encoder` | チャンクのエンコード |
-| `rtmp_client_connection` | 配信 / 再生クライアント接続 |
-| `rtmp_command` | RTMP コマンド |
-| `rtmp_connection` | 接続状態 / イベント / メッセージチャネル |
-| `rtmp_handshake` | ハンドシェイク |
-| `rtmp_message` | RTMP メッセージ |
-| `rtmp_message_decoder` | RTMP メッセージのデコード |
-| `rtmp_message_encoder` | RTMP メッセージのエンコード |
-| `rtmp_server_connection` | サーバー接続 |
-| `rtmp_timestamp` | タイムスタンプ / タイムスタンプ差分 |
-| `rtmp_url` | RTMP URL の解析 |
-| `rtmp_user_control_event` | ユーザーコントロールイベント |
-
-### 接続
-
-| 構造体 | 説明 |
-|--------|------|
-| `RtmpPublishClientConnection` | 配信用クライアント接続 |
-| `RtmpPlayClientConnection` | 再生用クライアント接続 |
-| `RtmpServerConnection` | サーバー接続 |
-| `RtmpUrl` | RTMP URL |
-| `RtmpConnectionOptions` | 接続オプション |
-
-### イベント
-
-| 列挙型 | 説明 |
-|--------|------|
-| `RtmpConnectionEvent` | 接続イベント (配信/再生要求、フレーム受信など) |
-| `RtmpConnectionState` | 接続状態 (Handshaking, Connecting, Publishing など) |
-
-### メディア
-
-| 型 | 説明 |
-|--------|------|
-| `VideoFrame` | 映像フレーム |
-| `AudioFrame` | 音声フレーム |
-| `MediaFrame` | メディアフレーム (Audio/Video の enum) |
-| `VideoCodec` | 映像コーデック |
-| `VideoFrameType` | 映像フレームタイプ (Keyframe, Inter など) |
-| `AudioFormat` | 音声フォーマット |
-| `AudioSampleRate` | 音声サンプルレート |
-| `AvcPacketType` | AVC パケットタイプ |
-| `AvcSequenceHeader` | AVC デコーダ設定データ |
-
-### タイムスタンプ
-
-| 型 | 説明 |
-|--------|------|
-| `RtmpTimestamp` | タイムスタンプ (ミリ秒単位、符号なし 32 ビット) |
-| `RtmpTimestampDelta` | タイムスタンプ差分 (ミリ秒単位、符号付き 32 ビット) |
-
-### エラー
-
-| 型 | 説明 |
-|--------|------|
-| `Error` | エラー型 (kind, reason, location を含む) |
-| `ErrorKind` | エラー種別 (`InvalidInput`、`InvalidData`、`InvalidState`、`Unsupported`、`InsufficientBuffer`) |
-
-`InsufficientBuffer` は、入力から必要なバイト数を読み取れなかったことを示します。続きの入力で再開できるかは、呼び出した API の契約によります。
-
-`AmfValue::decode` は、渡されたスライスが途中で終わっている場合、`kind` が `InsufficientBuffer` のエラーを返すことがあります。
-再試行する場合は、元の入力に続きのバイトを加えたスライスを渡してください。
-
-`RtmpMessageDecoder::decode` は、チャンクのデコードが入力不足で止まった場合に `Ok(None)` を返します。
-宣言長まで受信したメッセージの解析に失敗した場合は `Err` を返します。
-このとき `kind` が `InsufficientBuffer` でも、当該ペイロードを追加受信で補うことはできません。
+詳しい API は [docs.rs](https://docs.rs/shiguredo_rtmp) を参照してください。
 
 ## サンプル
 
-サンプルは [Tokio](https://github.com/tokio-rs/tokio) と [Rustls](https://github.com/rustls/rustls) を利用しています。引数のライブラリには [noargs](https://github.com/sile/noargs) を利用しています。
-
-### publish
-
-MP4 ファイルを RTMP/RTMPS サーバーに配信するクライアントの例です。
-
-```bash
-# RTMP
-cargo run -p publish -- -H 127.0.0.1 -p 1935 -a live -s stream input.mp4
-
-# RTMPS (--tls フラグ)
-cargo run -p publish -- -H example.com -p 443 -a live -s stream --tls input.mp4
-
-# RTMPS (URL スキーム)
-cargo run -p publish -- -u rtmps://example.com/live/stream input.mp4
-```
-
-**オプション:**
-
-- `-H, --host <HOST>`: サーバーホスト (デフォルト: 127.0.0.1)
-- `-p, --port <PORT>`: サーバーポート (デフォルト: 1935、TLS 時: 443)
-- `-a, --app <APP>`: アプリケーション名 (デフォルト: live)
-- `-s, --stream <STREAM>`: ストリーム名 (デフォルト: stream)
-- `-u, --url <URL>`: RTMP/RTMPS URL (例: rtmps://example.com/live/stream)
-- `--tls`: TLS (RTMPS) 有効化
-- `--verbose`: 詳細出力
-
-### server
-
-RTMP/RTMPS サーバーの例です。
-
-```bash
-# RTMP
-cargo run -p server -- -H 0.0.0.0 -p 1935
-
-# RTMPS
-cargo run -p server -- --tls --cert cert.pem --key key.pem -p 443
-```
-
-**オプション:**
-
-- `-H, --host <HOST>`: リッスンホスト (デフォルト: 0.0.0.0)
-- `-p, --port <PORT>`: リッスンポート (デフォルト: 1935、TLS 時: 443)
-- `--tls`: TLS (RTMPS) 有効化
-- `--cert <PATH>`: 証明書ファイル (PEM 形式)
-- `--key <PATH>`: 秘密鍵ファイル (PEM 形式)
-- `--verbose`: 詳細出力
+publish と server のサンプルは [examples/](https://github.com/shiguredo/rtmp-rs/tree/develop/examples) にあります。
 
 ## ライセンス
 
