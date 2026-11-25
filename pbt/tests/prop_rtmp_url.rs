@@ -1,4 +1,6 @@
-//! RTMP URL の authority・パス・クエリ・フラグメント境界の性質テスト
+//! RTMP URL の往復と authority・パス・クエリ・フラグメント境界の性質テスト
+
+use std::net::Ipv4Addr;
 
 use noprop::TestCaseContext;
 use shiguredo_rtmp::error::{Error, ErrorKind};
@@ -152,6 +154,86 @@ fn query_and_fragment_cannot_supply_missing_names() -> noprop::TestResult {
     Ok(())
 }
 
+/// クエリやフラグメントのない URL と、`/`、`?`、`#` を含まない別引数を使い、
+/// 両解析 API と明示ポート付きの整形・再解析で全フィールドを保持することを確認する。
+#[test]
+fn roundtrip_preserves_all_url_fields() -> noprop::TestResult {
+    // 別引数は既存のストリーム名の置き換えではなく、パス全体が app になる。
+    let parsed =
+        RtmpUrl::parse_with_stream_name("rtmp://example.invalid/live/original", "replacement")
+            .expect("複数階層の app と別引数の名前を解析できるはず");
+    assert_eq!(
+        (parsed.app.as_str(), parsed.stream_name.as_str()),
+        ("live/original", "replacement"),
+        "URL の最後のセグメントも app に残し、別引数を stream に使うはず"
+    );
+
+    let seed = noprop::seed_from_env_or_time(SEED_ENV)?;
+    noprop::Runner::new(seed).run(CASES, |ctx: &mut TestCaseContext| {
+        // ホストの 3 形式を毎回試す。IPv6 のブラケットと大文字小文字も元の表記を保持する。
+        let hosts = [
+            format!("host-{}.example.invalid", noprop::sample_u16(ctx)),
+            Ipv4Addr::from(noprop::sample_u32(ctx)).to_string(),
+            format!("[2001:Db8:aB::{:X}]", noprop::sample_u16(ctx)),
+        ];
+        let app = (0..noprop::sample_usize_in(ctx, 1..=4))
+            .map(|_| sample_text(ctx, PATH_TOKENS))
+            .collect::<Vec<_>>()
+            .join("/");
+        let stream = sample_text(ctx, PATH_TOKENS);
+        let explicit = noprop::sample_u16(ctx);
+
+        // スキームとポートの指定・省略を全てのホスト形式と組み合わせる。
+        for host in &hosts {
+            for (scheme, tls, default_port) in [("rtmp", false, 1935), ("rtmps", true, 443)] {
+                for input_port in [None, Some(explicit)] {
+                    let authority =
+                        input_port.map_or_else(|| host.clone(), |p| format!("{host}:{p}"));
+                    let app_url = format!("{scheme}://{authority}/{app}");
+                    let stream_url = format!("{app_url}/{stream}");
+                    // 解析結果から期待値を作らず、入力を組み立てた各要素と既定ポートを使う。
+                    let port = input_port.unwrap_or(default_port);
+                    let expected = RtmpUrl {
+                        host: host.clone(),
+                        port,
+                        app: app.clone(),
+                        stream_name: stream.clone(),
+                        tls,
+                    };
+                    let parsed = RtmpUrl::parse(&stream_url).unwrap_or_else(|error| {
+                        panic!("parse は {stream_url:?} を解析できるはず: {error}")
+                    });
+                    assert_eq!(parsed, expected, "parse で {stream_url:?} の全フィールドが一致するはず");
+                    let separate = RtmpUrl::parse_with_stream_name(&app_url, &stream)
+                        .unwrap_or_else(|error| {
+                            panic!(
+                                "parse_with_stream_name は {app_url:?} と {stream:?} を解析できるはず: {error}"
+                            )
+                        });
+                    assert_eq!(
+                        separate, expected,
+                        "parse_with_stream_name で {app_url:?} と {stream:?} の全フィールドが一致するはず"
+                    );
+
+                    // 両 API の結果は同じ値なので、整形と再解析は組み合わせごとに 1 回だけ行う。
+                    let display = parsed.to_string();
+                    assert_eq!(
+                        display,
+                        format!("{scheme}://{host}:{port}/{app}/{stream}"),
+                        "整形ではポートを明示するはず"
+                    );
+                    let reparsed = RtmpUrl::parse(&display).unwrap_or_else(|error| {
+                        panic!("整形した URL {display:?} を再解析できるはず: {error}")
+                    });
+                    assert_eq!(reparsed, expected, "整形と再解析で全フィールドを保持するはず");
+                }
+            }
+        }
+        Ok(())
+    })?;
+    Ok(())
+}
+
 mod authority {
     use super::{CASES, Error, ErrorKind, RtmpUrl, SEED_ENV, TestCaseContext};
 
@@ -260,8 +342,9 @@ mod authority {
         Ok(())
     }
 
+    /// 明示ポートを持つホストの表記、ポートの字句、`u16` の境界を検証する。
     #[test]
-    fn bracketed_host_spelling_and_ports_are_preserved() -> noprop::TestResult {
+    fn explicit_ports_preserve_host_and_validate_range() -> noprop::TestResult {
         // 明示ポートを持つ基本形は、どちらの API でも同じホストとポートを返す。
         for (host, port_text, port) in [
             ("host", "1935", 1935),
@@ -284,18 +367,33 @@ mod authority {
 
         let seed = noprop::seed_from_env_or_time(SEED_ENV)?;
         noprop::Runner::new(seed).run(CASES, |ctx: &mut TestCaseContext| {
-            let host = format!("[2001:Db8:aB::{:X}]", noprop::sample_u16(ctx));
-            for (scheme, default_port) in [("rtmp", 1935), ("rtmps", 443)] {
-                // ポート省略時もブラケット・大文字小文字を保持し、整形から値を復元できる。
-                for (api, result) in parse_authority(scheme, &host) {
-                    let parsed = result.expect("ブラケットで囲んだホストは有効なはず");
-                    assert_eq!(parsed.host, host, "{api} のホスト");
-                    assert_eq!(parsed.port, default_port, "{api} の既定ポート");
-                    assert_eq!(
-                        RtmpUrl::parse(&parsed.to_string()).expect("整形した URL は有効なはず"),
-                        parsed,
-                        "ブラケット付きホストは整形と再解析で変化しない"
-                    );
+            let host = format!("host-{}.example.invalid", noprop::sample_u16(ctx));
+            let ipv6 = format!("[2001:db8::{:x}]", noprop::sample_u16(ctx));
+            let invalid = Err(ErrorKind::InvalidInput);
+            // ホストを生成し、ポートの境界値は毎回すべて照合する。
+            // 0 は解析できるが、接続先ポートとして利用できるかどうかは試験しない。
+            // 空の明示ポートは省略と異なり、既定ポートにはならない。
+            let decimal_ports = [
+                ("0", Ok(0)),
+                ("65535", Ok(65535)),
+                ("065535", Ok(65535)),
+                ("65536", invalid),
+                ("", invalid),
+            ];
+            // ブラケット付きでは事前の数字検査をせず、これらも整数変換で拒否する。
+            let bracketed_only = [("-1", invalid), ("invalid", invalid)];
+            for (host, extra) in [(&host, &[][..]), (&ipv6, bracketed_only.as_slice())] {
+                for &(port_text, expected) in decimal_ports.iter().chain(extra) {
+                    let authority = format!("{host}:{port_text}");
+                    for scheme in ["rtmp", "rtmps"] {
+                        for (api, result) in parse_authority(scheme, &authority) {
+                            let actual = result.map(|url| url.port).map_err(|error| error.kind);
+                            assert_eq!(
+                                actual, expected,
+                                "{api} の {scheme}://{authority} の明示ポート"
+                            );
+                        }
+                    }
                 }
             }
             Ok(())
